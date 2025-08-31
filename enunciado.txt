@@ -1,0 +1,146 @@
+1. Resumen Ejecutivo
+El proyecto tiene como objetivo desarrollar un sistema de domótica funcional utilizando
+una Raspberry Pi, integrando sensores, actuadores y una aplicación web de control y
+monitoreo remoto, dentro del contexto de una vivienda inteligente para la residencial
+"Pinos Altos". Este sistema permitirá registrar y controlar diversos aspectos del hogar
+como temperatura, iluminación, alarmas, entre otros, mediante el uso de tecnologías IoT,
+utilizando el protocolo de comunicación MQTT y una base de datos en la nube
+(MongoDB). El proyecto también exige el desarrollo de un dashboard con visualización en
+tiempo real y una sección de control con autenticación de usuario. Además, se requiere
+una presentación profesional del prototipo físico y la entrega de manuales técnico y de
+usuario.
+
+●​ Descripción del problema a resolver
+Su equipo de desarrollo ha sido contactado por la residencial “Pinos Altos”, ya que desean
+convertir algunas viviendas en lo que hoy conocemos como Smart Home. Los avances
+tecnológicos y la creciente demanda de automatización e interacción avanzada en los
+hogares han impulsado el desarrollo de sistemas de automatización residencial, también
+conocidos como domótica. Estos sistemas aprovechan la disponibilidad cada vez mayor
+de componentes asequibles y permiten a los usuarios interactuar de manera más
+sofisticada con su entorno. En el ámbito de la investigación ambiental, este concepto se
+conoce como ‘Smart Home’ (hogar inteligente), que implica la instalación de sensores y
+actuadores en el hogar, así como la incorporación de hardware y software especializados
+que permiten el control remoto y la interacción deseada entre los diferentes dispositivos.
+
+Arquitectura
+flowchart TD
+    TEMP["TEMP"]
+    HUMEDAD["HUMEDAD"]
+    MOVIMIENTO["MOVIMIENTO"]
+    LED["LED"]
+    SERVOS["SERVOS"]
+    BOMBA["BOMBA DE AGUA"]
+    AC["A/C"]
+    LCD["LCD"]
+    PI["Raspberry Pi"]
+    WWW["WWW"]
+    HIVEMQ["HiveMQ"]
+    MONGO["Mongo"]
+    SERVER["SERVER"]
+    DASHBOARD["DASHBOARD"]
+
+    TEMP <--> PI
+    HUMEDAD <--> PI
+    MOVIMIENTO <--> PI
+    LED <--> PI
+    SERVOS <--> PI
+    BOMBA <--> PI
+    AC <--> PI
+    PI <--> LCD
+    PI <--> WWW
+    WWW <--> HIVEMQ
+    WWW <--> MONGO
+    WWW <--> SERVER
+    SERVER <--> DASHBOARD
+    DASHBOARD <--> WWW
+
+
+Iluminación:
+El prototipo debe de contar con iluminación distribuida de la siguiente manera
+●​ Un LED RGB que se podrá controlar desde la aplicación web
+●​ Un LED RGB que funcionara como una alarma
+●​ Tres LED blancos para iluminar algunas habitaciones.
+La señal de encendido y apagado de las LEDS blancas y del LED RGB se enviará desde
+la aplicación web a través de la plataforma Hive MQ a través del canal “/ilumination”. Del
+LED RGB se podrán hacer combinaciones de colores que se enviaran desde la página
+web. Cada vez que se encienda la iluminación de una habitación, deberá de mostrar en la
+pantalla LCD un mensaje indicando cual es la habitación que se ha encendido y deberá de
+realizar un registro en la base de datos, incluyendo, fecha, hora y una descripción de la
+habitación que se ha iluminado. De igual forma, deberá mostrar un mensaje cuando se
+apague la iluminación de la habitación indicando cuál ha sido.
+Riego:
+Se deberá de implementar un sistema de riego utilizando un sensor de humedad de tierra,
+cuando la humedad detectada sea menor al 95% se deberá de activar una bomba de agua
+pequeña para emular un sistema de riego a gran escala. Se deberá de almacenar los
+registros de las lecturas de humedad en la base de datos cada 7 minutos. De igual forma
+cuando se active la bomba de agua se deberá de realizar un registro con la fecha y la hora
+en la que se activó la bomba y la lectura de humedad que ha detectado el sensor.
+Ventilación:
+Utilizando la combinación de sensor - actuador, se deberá de implementar un control de
+temperatura utilizando el sensor DHT11 o DHT22, que al tener lecturas de temperatura
+mayores a 22 °C deberá de accionar ventiladores que emulaban el accionar del Aire
+Acondicionado en el hogar, estos deberán de mantenerse activos hasta que la temperatura
+vuelva a disminuir por debajo de los 22 °C. Cada vez que se activen los ventiladores, se
+deberá de crear un par de registros nuevos en la base de datos en la nube, el primer
+registro debe de incluir fecha y hora en que se activó el sistema de ventilación y el
+segundo registro la fecha y hora en que se apagó. La lectura de la temperatura deberá de
+mostrarse constantemente en una pantalla LCD y deberán registrarse estas lecturas de
+temperatura cada 5 minutos en la base de datos.
+De forma similar se deberá de implementar un sistema de alarma, en el cual cuando la
+temperatura sobrepase los 27 °C se deberá de activar un buzzer y utilizar LED RGB
+alternando entre los colores Rojo y Azul. Se realizará un registro en la base de datos con
+la fecha y hora en que se activó la alarma, la lectura de temperatura y se enviará una
+alerta que se deberá de ver en tiempo real en la página web a través del canal “/alerts”.
+Movimiento:
+Nuevamente, utilizando la combinación sensor - actuador, se le solicita que utilizando un
+sensor PIR para la parte exterior de la casa, emulando un patio o área verde principal, que
+al detectar un movimiento proceda con activar iluminación en el sitio. Cuando la
+iluminación se active en esta área NO deberá de mostrarse en la LCD, pero se deberá de
+hacer un registro en la base de datos donde se almacene la fecha y hora en que se
+detectó el movimiento únicamente cuando pase de un estado bajo a alto la lectura del
+sensor. Queda a discreción del grupo el tiempo pertinente que deberá transcurrir sin
+detección de movimiento para proceder con el apagado de la iluminación.
+Entrada:
+Se deberá implementar un portón automático, que se pueda accionar desde la app web,
+para esto, deberán de utilizar un servomotor, el cual al enviar la señal desde el dashboard
+a través de Hive MQ utilizando el canal “/entrance” para controlar la apertura del portón.
+Una vez se ha ingresado por el portón, se deberá de enviar la señal para el cierre del
+portón. Por cada vez que se abra el portón, únicamente, se deberá de crear un registro en
+la base de datos indicando fecha y hora en que se realizó la acción. La acción de apertura
+y cierre deberá de indicarse en la pantalla LCD.
+App Web:
+Como parte de los sistemas IoT es importante poder tener un control y monitoreo de forma
+remota de los sensores y actuadores del sistema implementado. Por lo que deberán de
+desarrollar una aplicación web en el framework de su conveniencia (React, Angular, Vue,
+etc)o en HTML básico. Las secciones de esta aplicación web son las siguientes:
+●​ Login:
+Para acceder a la aplicación web, deben de crear un login que permita acceder a
+las características de control y monitoreo de la aplicación. Se deberán de autenticar
+utilizando el siguiente usuario:
+●​ User: grupo#_seccion_proy1
+●​ Pass: Discreción Del Grupo
+●​ Dashboard:
+Deberán de crear un dashboard interactivo en donde se pueda monitorear las
+lecturas de los sensores y estados de los actuadores. Por lo que los registros
+almacenados en la base de datos en la nube, específicamente en MongoDB,
+deberán de visualizarse en este apartado. Se especifican sugerencias del contenido
+del dashboard a continuación.
+●​ Restricciones Dashboard:
+●​ Deberán contar con lecturas de mínimo 3 días
+●​ Deben de almacenar la fecha y hora de los registros para agrupar los datos
+por fecha o por hora en las gráficas.
+●​ Para los actuadores se debe usar una gráfica de barras y para las lecturas
+de temperatura se debe de utilizar una gráfica de líneas.
+●​ Deben de mostrar los registros almacenados tanto en gráficas como en
+tablas para su respectivo filtrado.
+●​ Control
+Se deberá de poder realizar control remoto de los actuadores mencionados
+anteriormente a través de la aplicación web, es decir se podrá controlar la
+iluminación y la entrada desde la aplicación web, mediante el servicio de HiveMQ.
+NOTA: Se tomará en cuenta el diseño atractivo de la aplicación web así como su
+intuitividad para la facilidad de uso para cualquier usuario. Por lo que pueden utilizar
+cualquier librería de diseño. Ya que la aplicación se correrá de forma local en una PC de
+alguno de los integrantes del grupo.
+Servidor:
+Se implementara un servidor que será el encargado de comunicar la página web con la
+base de datos a través de una API. El lenguaje a utilizar quedará a discreción del grupo.
