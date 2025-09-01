@@ -9,10 +9,17 @@ class MQTTService {
 
   connect() {
     const options = {
-      host: process.env.MQTT_HOST || 'broker.hivemq.com',
-      port: process.env.MQTT_PORT || 1883,
-      protocol: 'mqtt',
-      clientId: process.env.MQTT_CLIENT_ID || `backend-server-${Math.random().toString(16).substring(2, 10)}`
+      host: process.env.MQTT_HOST || 'your-cluster-url.hivemq.cloud',
+      port: process.env.MQTT_PORT || 8883,
+      protocol: 'mqtts', // usar mqtts para conexión segura
+      username: process.env.MQTT_USERNAME,
+      password: process.env.MQTT_PASSWORD,
+      clientId: process.env.MQTT_CLIENT_ID || `backend-server-${Math.random().toString(16).substring(2, 10)}`,
+      clean: true,
+      connectTimeout: 4000,
+      reconnectPeriod: 1000,
+      // Configuración TLS para HiveMQ Cloud
+      rejectUnauthorized: true
     };
 
     this.client = mqtt.connect(options);
