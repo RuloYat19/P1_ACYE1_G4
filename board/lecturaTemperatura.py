@@ -1,96 +1,88 @@
-import time
-import board
-import adafruit_dht
-import paho.mqtt.client as mqtt
-import json
 import os
+import time
+import json
+import threading
 from datetime import datetime
 
-dht_device = adafruit_dht.DHT11(board.D4)
-
-MQTT_HOST = "64430c7064d64067b68c5e59cd48a827.s1.eu.hivemq.cloud"  
-MQTT_PORT = 8883
-MQTT_USERNAME = "keneth" 
-MQTT_PASSWORD = "ArquiGrupo4"  
-MQTT_CLIENT_ID = "raspberry-pi-sensor"
-
-TEMPERATURE_TOPIC = "/temperatura"
-HUMIDITY_TOPIC = "/humedad_aire"
-
-def on_connect(client, userdata, flags, rc, properties=None):
-    if rc == 0:
-        print("Conectado exitosamente a HiveMQ Cloud")
-    else:
-        print(f"Error de conexionn. Codigo: {rc}")
-
-def on_disconnect(client, userdata, rc, properties=None):
-    print("Desconectado de HiveMQ Cloud")
-
-def on_publish(client, userdata, mid):
-    print(f"Mensaje publicado con ID: {mid}")
-
-client = mqtt.Client(client_id=MQTT_CLIENT_ID)
-client.username_pw_set(MQTT_USERNAME, MQTT_PASSWORD)
-client.tls_set()  
-client.on_connect = on_connect
-client.on_disconnect = on_disconnect
-client.on_publish = on_publish
-
 try:
-    client.connect(MQTT_HOST, MQTT_PORT, 60)
-    client.loop_start()
-except Exception as e:
-    print(f"Error conectando a MQTT: {e}")
-    exit(1)
+    import board
+    import adafruit_dht
+except Exception:
+    board = None
+    adafruit_dht = None
 
-print("Iniciando lectura de sensores...")
+import paho.mqtt.client as mqtt
 
-while True:
+class DHTPublisher:
+    def __init__(self, period=5.0):
+        self.period = period
+        self.mqtt_host = os.environ.get("MQTT_HOST", "64430c7064d64067b68c5e59cd48a827.s1.eu.hivemq.cloud")
+        self.mqtt_port = int(os.environ.get("MQTT_PORT", "8883"))
+        self.mqtt_user = os.environ.get("MQTT_USERNAME", "keneth")
+        self.mqtt_pass = os.environ.get("MQTT_PASSWORD", "ArquiGrupo4")
+        self.mqtt_client_id = os.environ.get("MQTT_CLIENT_ID", "raspberry-pi-sensor")
+        self.client = None
+        self._stop = threading.Event()
+        self._thread = None
+
+    def loop(self):
+        if board is None or adafruit_dht is None:
+            print("DHT libs not available")
+            return
+        dht = adafruit_dht.DHT11(board.D27)
+        client = mqtt.Client(client_id=self.mqtt_client_id)
+        client.username_pw_set(self.mqtt_user, self.mqtt_pass)
+        client.tls_set()
+        client.connect(self.mqtt_host, self.mqtt_port, 60)
+        client.loop_start()
+        self.client = client
+        try:
+            while not self._stop.is_set():
+                try:
+                    t = dht.temperature
+                    h = dht.humidity
+                except Exception as e:
+                    time.sleep(self.period)
+                    continue
+                if t is not None and h is not None:
+                    ts = datetime.now().isoformat()
+                    temp_data = {"temperature": float(t), "location": "interior", "timestamp": ts, "device": "DHT11", "pin": "D27", "connected": True}
+                    hum_data = {"humidity": float(h), "location": "interior", "timestamp": ts, "device": "DHT11", "pin": "27", "connected": True}
+                    try:
+                        client.publish("/temperatura", json.dumps(temp_data))
+                        client.publish("/humedad_aire", json.dumps(hum_data))
+                        print("Temp {:.1f}C Hum {:.1f}%".format(t, h))
+                    except Exception:
+                        pass
+                time.sleep(self.period)
+        finally:
+            try:
+                client.loop_stop()
+                client.disconnect()
+            except Exception:
+                pass
+
+    def start(self):
+        self._stop.clear()
+        t = threading.Thread(target=self.loop, daemon=True)
+        t.start()
+        self._thread = t
+
+    def stop(self):
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+
+def main():
+    svc = DHTPublisher()
     try:
-        temperature_c = dht_device.temperature
-        humidity = dht_device.humidity
+        svc.start()
+        while True:
+            time.sleep(2.0)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        svc.stop()
 
-        if temperature_c is not None and humidity is not None:
-            device_ts = datetime.now().isoformat()
-
-            temp_data = {
-                "temperature": temperature_c,
-                "location": "interior",
-                "timestamp": device_ts,
-                "device": "DHT11",
-                "pin": "D4",
-                "connected": True
-            }
-
-            humidity_data = {
-                "humidity": humidity,
-                "location": "interior",
-                "timestamp": device_ts,
-                "device": "DHT11",
-                "pin": "D4",
-                "connected": True
-            }
-            
-            temp_result = client.publish(TEMPERATURE_TOPIC, json.dumps(temp_data))
-            if temp_result.rc == mqtt.MQTT_ERR_SUCCESS:
-                print(f"Temperatura enviada: {temperature_c:.1f}C")
-            else:
-                print(f"Error enviando temperatura: {temp_result.rc}")
-            
-            humidity_result = client.publish(HUMIDITY_TOPIC, json.dumps(humidity_data))
-            if humidity_result.rc == mqtt.MQTT_ERR_SUCCESS:
-                print(f"Humedad enviada: {humidity:.1f}%")
-            else:
-                print(f"Error enviando humedad: {humidity_result.rc}")
-                
-            print(f"Temperatura: {temperature_c:.1f}C, Humedad: {humidity:.1f}%")
-            
-        else:
-            print("Error: No se pudo leer el sensor. Reintentando...")
-
-    except RuntimeError as error:
-        print(f"Error de lectura: {error.args[0]}")
-    except Exception as e:
-        print(f"Error inesperado: {e}")
-
-    time.sleep(5) 
+if __name__ == "__main__":
+    main()
