@@ -5,12 +5,15 @@ const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:3001';
 
 export type Reading = {
   _id?: string;
+  id?: string;
   type?: string;
   value?: number | string;
   temperature?: number;
   humidity?: number;
+  unit?: string;
   timestamp: string;
   location?: string;
+  device?: string;
 };
 
 export const useReadings = ({ apiUrl = API_URL } = {}) => {
@@ -49,10 +52,34 @@ export const useReadings = ({ apiUrl = API_URL } = {}) => {
 
   const refreshLatest = useCallback(async () => {
     try {
-      const res = await axios.get(`${apiUrl}/api/sensors/latest`);
-      if (res.status === 200) setLatestReading(res.data);
+      // fetch latest temperature and humidity separately and combine
+      const [tempRes, humRes] = await Promise.allSettled([
+        axios.get(`${apiUrl}/api/sensors/latest`, { params: { type: 'temperature' } }),
+        axios.get(`${apiUrl}/api/sensors/latest`, { params: { type: 'humidity' } })
+      ]);
+
+      const combined: any = { timestamp: null };
+
+      if (tempRes.status === 'fulfilled' && tempRes.value.status === 200) {
+        combined.temperature = tempRes.value.data.value ?? tempRes.value.data.temperature ?? null;
+        combined.tempUnit = tempRes.value.data.unit ?? '°C';
+        combined.timestamp = combined.timestamp || tempRes.value.data.timestamp;
+      }
+
+      if (humRes.status === 'fulfilled' && humRes.value.status === 200) {
+        combined.humidity = humRes.value.data.value ?? humRes.value.data.humidity ?? null;
+        combined.humUnit = humRes.value.data.unit ?? '%';
+        // choose the most recent timestamp
+        if (!combined.timestamp || new Date(humRes.value.data.timestamp) > new Date(combined.timestamp)) {
+          combined.timestamp = humRes.value.data.timestamp;
+        }
+      }
+
+      if (combined.temperature !== undefined || combined.humidity !== undefined) {
+        setLatestReading(combined as any);
+      }
     } catch (err) {
-      // ignore 404
+      // ignore
     }
   }, [apiUrl]);
 

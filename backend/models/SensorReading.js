@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const sensorReadingSchema = new mongoose.Schema({
   type: {
     type: String,
-    enum: ['temperature', 'humidity', 'motion', 'light', 'door', 'pump', 'alarm'],
+  enum: ['temperature', 'humidity', 'motion', 'light', 'door', 'pump', 'alarm', 'soil'],
     required: true
   },
   value: {
@@ -32,6 +32,29 @@ const sensorReadingSchema = new mongoose.Schema({
   location: {
     type: String,
     default: ''
+  }
+  ,
+  // Campos opcionales para sensores/actuadores adicionales
+  connected: {
+    type: Boolean,
+    default: null
+  },
+  pin: {
+    type: String,
+    default: null
+  },
+  device: {
+    type: String,
+    default: null
+  },
+  // unidad de la medida (ej: '°C', '%', 'digital')
+  unit: {
+    type: String,
+    default: null
+  },
+  deviceTimestamp: {
+    type: Date,
+    default: null
   }
 });
 

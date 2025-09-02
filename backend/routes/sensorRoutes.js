@@ -1,20 +1,49 @@
 const express = require('express');
 const SensorReading = require('../models/SensorReading');
 let devSeed = null;
-const useDev = process.env.DEV_SEED === 'true';
-if (useDev) {
-  try {
-    devSeed = require('../dev/seedData');
-    console.log('⚙️  Usando datos de desarrollo (DEV_SEED=true)');
-  } catch (err) {
-    console.warn('No se pudo cargar dev/seedData:', err.message);
-    devSeed = null;
-  }
-}
+// Feature flag to enable development in-memory seed data (set USE_DEV=true in .env to enable)
+const useDev = process.env.USE_DEV === 'true' || false;
 
 const router = express.Router();
 
-// Obtener lecturas con paginación y filtros
+// Utility: sanitize a DB reading before sending al cliente
+function sanitizeReading(doc) {
+  if (!doc) return null;
+  // si es un documento de mongoose
+  const obj = typeof doc.toObject === 'function' ? doc.toObject() : doc;
+
+  // Guardar fechas sólo si son válidas para evitar toISOString() sobre Invalid Date
+  const safeDateToISOString = (d) => {
+    if (!d) return undefined;
+    const dt = new Date(d);
+    return !isNaN(dt.getTime()) ? dt.toISOString() : undefined;
+  };
+
+  const out = {
+    id: obj._id ? String(obj._id) : undefined,
+    type: obj.type,
+    value: typeof obj.value !== 'undefined' && obj.value !== null ? obj.value : undefined,
+    timestamp: safeDateToISOString(obj.timestamp),
+    deviceTimestamp: safeDateToISOString(obj.deviceTimestamp),
+  unit: obj.unit || undefined,
+    description: obj.description || undefined,
+    status: typeof obj.status === 'boolean' ? obj.status : undefined,
+    color: obj.color || undefined,
+    location: obj.location || undefined,
+    connected: typeof obj.connected === 'boolean' ? obj.connected : undefined,
+    pin: obj.pin || undefined,
+    device: obj.device || undefined
+  };
+
+  // Remove undefined values
+  Object.keys(out).forEach(k => out[k] === undefined && delete out[k]);
+  return out;
+}
+
+function sanitizeArray(arr) {
+  return Array.isArray(arr) ? arr.map(sanitizeReading) : [];
+}
+
 router.get('/', async (req, res) => {
   try {
     const page = parseInt(req.query.page) || 1;
@@ -27,12 +56,10 @@ router.get('/', async (req, res) => {
     const skip = (page - 1) * limit;
     const { type, startDate, endDate, location } = req.query;
 
-    // Construir filtros
     const query = {};
     if (type) query.type = type;
     if (location) query.location = location;
 
-    // Filtro por fecha
     if (startDate && endDate) {
       query.timestamp = {
         $gte: new Date(startDate),
@@ -49,7 +76,7 @@ router.get('/', async (req, res) => {
       .limit(limit);
 
     res.json({
-      data: readings,
+      data: readings.map(sanitizeReading),
       pagination: {
         page,
         limit,
@@ -63,13 +90,12 @@ router.get('/', async (req, res) => {
   }
 });
 
-// Obtener la lectura más reciente
 router.get('/latest', async (req, res) => {
   try {
     if (useDev && devSeed) {
       const reading = devSeed.latest();
       if (!reading) return res.status(404).json({ error: 'No se encontraron lecturas' });
-      return res.json(reading);
+      return res.json(sanitizeReading(reading));
     }
 
     const { type } = req.query;
@@ -78,35 +104,34 @@ router.get('/latest', async (req, res) => {
     if (!reading) {
       return res.status(404).json({ error: 'No se encontraron lecturas' });
     }
-    res.json(reading);
+    res.json(sanitizeReading(reading));
   } catch (error) {
     console.error('Error obteniendo última lectura:', error);
     res.status(500).json({ error: 'Error del servidor' });
   }
 });
 
-// Obtener estadísticas para el dashboard
 router.get('/stats', async (req, res) => {
   try {
     if (useDev && devSeed) {
       return res.json(devSeed.stats());
     }
 
-    const stats = {};
-    const temperature = await SensorReading.findOne({ type: 'temperature' }).sort({ timestamp: -1 });
-    stats.temperature = temperature;
-    const humidity = await SensorReading.findOne({ type: 'humidity' }).sort({ timestamp: -1 });
-    stats.humidity = humidity;
-    const lights = await SensorReading.find({ type: 'light' }).sort({ timestamp: -1 }).limit(5);
-    stats.lights = lights;
-    const door = await SensorReading.findOne({ type: 'door' }).sort({ timestamp: -1 });
-    stats.door = door;
+  const stats = {};
+  const temperature = await SensorReading.findOne({ type: 'temperature' }).sort({ timestamp: -1 });
+  stats.temperature = sanitizeReading(temperature);
+  const humidity = await SensorReading.findOne({ type: 'humidity' }).sort({ timestamp: -1 });
+  stats.humidity = sanitizeReading(humidity);
+  const lights = await SensorReading.find({ type: 'light' }).sort({ timestamp: -1 }).limit(5);
+  stats.lights = sanitizeArray(lights);
+  const door = await SensorReading.findOne({ type: 'door' }).sort({ timestamp: -1 });
+  stats.door = sanitizeReading(door);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const motionCount = await SensorReading.countDocuments({ type: 'motion', timestamp: { $gte: today } });
     stats.motionToday = motionCount;
-    const activeAlerts = await SensorReading.find({ type: 'alarm', status: true }).sort({ timestamp: -1 });
-    stats.activeAlerts = activeAlerts;
+  const activeAlerts = await SensorReading.find({ type: 'alarm', status: true }).sort({ timestamp: -1 });
+  stats.activeAlerts = sanitizeArray(activeAlerts);
     res.json(stats);
   } catch (error) {
     console.error('Error obteniendo estadísticas:', error);
@@ -114,7 +139,6 @@ router.get('/stats', async (req, res) => {
   }
 });
 
-// Obtener datos para gráficas
 router.get('/chart', async (req, res) => {
   try {
     const { type, days = 7 } = req.query;
@@ -131,7 +155,6 @@ router.get('/chart', async (req, res) => {
       .sort({ timestamp: 1 })
       .select('value timestamp');
 
-    // Agrupar por fecha/hora según el tipo
     const groupedData = readings.reduce((acc, reading) => {
       const date = new Date(reading.timestamp);
       const key = type === 'temperature' || type === 'humidity'
@@ -145,7 +168,6 @@ router.get('/chart', async (req, res) => {
       return acc;
     }, {});
 
-    // Calcular promedio para cada período
     const chartData = Object.values(groupedData).map(item => ({
       date: item.date,
       value: item.values.reduce((sum, val) => sum + val, 0) / item.values.length,

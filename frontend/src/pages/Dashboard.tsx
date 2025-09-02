@@ -60,7 +60,8 @@ const Dashboard: React.FC = () => {
     socket.on('disconnect', () => setIsConnected(false));
     socket.on('connect_error', (e: any) => setSocketError(e?.message ?? 'error'));
     socket.on('newReading', (data: any) => {
-      setLatestReading && setLatestReading(data);
+      // fetch combined latest temperature+humidity
+      refreshLatest();
       if ((pagination?.page ?? 1) === 1) fetchPage(1);
     });
     return () => { socket.disconnect(); };
@@ -179,15 +180,15 @@ const Dashboard: React.FC = () => {
         {/* Sensor Cards */}
         {latestReading && (
           <div className="grid gap-6 md:grid-cols-2">
-            <div className={`group relative bg-gradient-to-br ${temperatureGradient((latestReading as any).temperature ?? 0)} text-white rounded-3xl p-6 w-full overflow-hidden shadow-md`}>
+      <div className={`group relative bg-gradient-to-br ${temperatureGradient((latestReading as any).temperature ?? 0)} text-white rounded-3xl p-6 w-full overflow-hidden shadow-md`}>
               <div className="flex items-center gap-4">
                 <div className="bg-white/20 rounded-2xl p-4 backdrop-blur-sm"><Thermometer className="size-8" /></div>
                 <div>
                   <div className="text-sm uppercase tracking-wide font-medium text-white/80">Temperatura Actual</div>
-                  <div className="text-5xl font-bold leading-none drop-shadow-sm">{(latestReading as any).temperature}°C</div>
+          <div className="text-5xl font-bold leading-none drop-shadow-sm">{(latestReading as any)?.temperature ?? '—'}{(latestReading as any)?.tempUnit ? ` ${(latestReading as any).tempUnit}` : ' °C'}</div>
                 </div>
               </div>
-              <div className="mt-4 text-xs text-white/70">Última actualización: {formatDate((latestReading as any).timestamp)}</div>
+        <div className="mt-4 text-xs text-white/70">Última actualización: {formatDate((latestReading as any).timestamp)}</div>
               {tempStats && (
                 <div className="mt-5 grid grid-cols-3 gap-3 text-center text-xs">
                   <div className="bg-white/15 rounded-lg py-2"><div className="font-semibold">{tempStats.min}°C</div><div className="opacity-70">Mín</div></div>
@@ -197,15 +198,15 @@ const Dashboard: React.FC = () => {
               )}
             </div>
 
-            <div className={`group relative bg-gradient-to-br ${humidityGradient((latestReading as any).humidity ?? 0)} text-white rounded-3xl p-6 w-full overflow-hidden shadow-md`}>
+      <div className={`group relative bg-gradient-to-br ${humidityGradient((latestReading as any).humidity ?? 0)} text-white rounded-3xl p-6 w-full overflow-hidden shadow-md`}>
               <div className="flex items-center gap-4">
                 <div className="bg-white/20 rounded-2xl p-4 backdrop-blur-sm"><Droplets className="size-8" /></div>
                 <div>
                   <div className="text-sm uppercase tracking-wide font-medium text-white/80">Humedad Actual</div>
-                  <div className="text-5xl font-bold leading-none drop-shadow-sm">{(latestReading as any).humidity}%</div>
+          <div className="text-5xl font-bold leading-none drop-shadow-sm">{(latestReading as any)?.humidity ?? '—'}{(latestReading as any)?.humUnit ? ` ${(latestReading as any).humUnit}` : ' %'}</div>
                 </div>
               </div>
-              <div className="mt-4 text-xs text-white/70">Última actualización: {formatDate((latestReading as any).timestamp)}</div>
+        <div className="mt-4 text-xs text-white/70">Última actualización: {formatDate((latestReading as any).timestamp)}</div>
               {humStats && (
                 <div className="mt-5 grid grid-cols-3 gap-3 text-center text-xs">
                   <div className="bg-white/15 rounded-lg py-2"><div className="font-semibold">{humStats.min}%</div><div className="opacity-70">Mín</div></div>
@@ -320,7 +321,7 @@ const Dashboard: React.FC = () => {
                   ))}
                 </tbody>
               </table>
-            ) : (
+                ) : (
               <table className="min-w-full text-sm">
                 <thead className="bg-slate-100 text-slate-600 text-xs uppercase">
                   <tr>
@@ -330,13 +331,33 @@ const Dashboard: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {readings.map((r, idx) => (
-                    <tr key={r._id || idx} className="border-t border-slate-100 hover:bg-slate-50">
-                      <td className="px-5 py-3 whitespace-nowrap text-slate-700">{formatDate(r.timestamp)}</td>
-                      <td className="px-5 py-3"><div className={`inline-flex items-center gap-2 font-medium ${temperatureColor((r as any).temperature ?? Number((r as any).value))}`}><Thermometer className="size-4 opacity-80" /> {(r as any).temperature ?? (r as any).value}°C</div></td>
-                      <td className="px-5 py-3"><div className={`inline-flex items-center gap-2 font-medium ${humidityColor((r as any).humidity ?? Number((r as any).value))}`}><Droplets className="size-4 opacity-80" /> {(r as any).humidity ?? (r as any).value}%</div></td>
-                    </tr>
-                  ))}
+                  {
+                    // Pair temperature and humidity readings by timestamp (exact match by ISO second)
+                    (() => {
+                      const items = (readings || []).filter((r:any) => r.type === 'temperature' || r.type === 'humidity');
+                      const mapByTs = new Map();
+                      items.forEach((r:any) => {
+                        const key = r.timestamp ? r.timestamp.slice(0,19) : r.timestamp;
+                        if (!mapByTs.has(key)) mapByTs.set(key, { temp: null, hum: null, ts: r.timestamp });
+                        const entry = mapByTs.get(key);
+                        if (r.type === 'temperature') entry.temp = r;
+                        if (r.type === 'humidity') entry.hum = r;
+                      });
+                      const rows = Array.from(mapByTs.values()).sort((a:any,b:any)=> new Date(b.ts).getTime() - new Date(a.ts).getTime());
+                      return rows.map((row:any, idx:number) => {
+                        const t = row.temp;
+                        const h = row.hum;
+                        const ts = row.ts || (t && t.timestamp) || (h && h.timestamp) || null;
+                        return (
+                          <tr key={idx} className="border-t border-slate-100 hover:bg-slate-50">
+                            <td className="px-5 py-3 whitespace-nowrap text-slate-700">{formatDate(ts)}</td>
+                            <td className="px-5 py-3"><div className={`inline-flex items-center gap-2 font-medium ${temperatureColor((t?.temperature ?? Number(t?.value)) ?? 0)}`}><Thermometer className="size-4 opacity-80" /> {t ? (t.temperature ?? t.value) + (t.unit ? ` ${t.unit}` : ' °C') : '—'}</div></td>
+                            <td className="px-5 py-3"><div className={`inline-flex items-center gap-2 font-medium ${humidityColor((h?.humidity ?? Number(h?.value)) ?? 0)}`}><Droplets className="size-4 opacity-80" /> {h ? (h.humidity ?? h.value) + (h.unit ? ` ${h.unit}` : ' %') : '—'}</div></td>
+                          </tr>
+                        );
+                      });
+                    })()
+                  }
                   {readings.length === 0 && (
                     <tr>
                       <td colSpan={3} className="px-5 py-10 text-center text-slate-500 text-sm">No hay lecturas disponibles.</td>

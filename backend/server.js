@@ -8,19 +8,15 @@ const mqttService = require('./services/mqttService');
 const sensorRoutes = require('./routes/sensorRoutes');
 const actuatorRoutes = require('./routes/actuatorRoutes');
 
-// env
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-
-// CORS config: allow FRONTEND_URL or comma-separated FRONTEND_URLS
 const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000').split(',').map(u => u.trim());
 
 const io = socketIo(server, {
   cors: {
     origin: function (origin, callback) {
-      // allow requests with no origin (like mobile apps or curl)
       if (!origin) return callback(null, true);
       if (allowedOrigins.indexOf(origin) !== -1) return callback(null, true);
       const msg = 'El CORS policy no permite el origen: ' + origin;
@@ -51,8 +47,12 @@ app.use('*', (req, res) => {
 });
 
 app.use((error, req, res, next) => {
-  console.error('Error global:', error);
-  res.status(500).json({ error: 'Error interno del servidor' });
+  console.error('Error global:', error && error.stack ? error.stack : error);
+  const resp = { error: 'Error interno del servidor' };
+  if (process.env.NODE_ENV === 'development' && error) {
+    resp.details = error.message || String(error);
+  }
+  res.status(500).json(resp);
 });
 
 io.on('connection', (socket) => {
@@ -104,23 +104,6 @@ const startServer = async () => {
     process.exit(1);
   }
 };
-
-// Si estamos en modo DEV_SEED, arrancar el emisor de datos quemados
-if (process.env.DEV_SEED === 'true') {
-  try {
-    const seed = require('./dev/seedData');
-    console.log('⚙️  Modo DEV_SEED activado: emitiendo lecturas quemadas cada 10s');
-    setInterval(() => {
-      const newReading = seed.generateReading();
-      seed.pushNewReading(newReading);
-      if (global && typeof global.emitUpdate === 'function') {
-        global.emitUpdate('newReading', newReading);
-      }
-    }, 10000);
-  } catch (err) {
-    console.error('No se pudo iniciar DEV_SEED:', err.message);
-  }
-}
 
 process.on('SIGINT', async () => {
   console.log('\n🛑 Cerrando servidor...');
