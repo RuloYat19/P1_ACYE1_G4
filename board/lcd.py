@@ -7,7 +7,6 @@ import os
 import paho.mqtt.client as mqtt
 from RPLCD.i2c import CharLCD 
 
-# Config MQTT / LCD (ajusta según tu entorno)
 MQTT_HOST = os.environ.get('MQTT_HOST', '64430c7064d64067b68c5e59cd48a827.s1.eu.hivemq.cloud')
 MQTT_PORT = int(os.environ.get('MQTT_PORT', '8883'))
 MQTT_USER = os.environ.get('MQTT_USERNAME', 'keneth')
@@ -28,14 +27,12 @@ TOPICS = [
   ('/fan', 0),
 ]
 
-# Estado compartido
 state = {
   'temp': None,
   'hum': None,
 }
 event_q = queue.Queue(maxsize=10)
 
-# Inicializa LCD
 lcd = CharLCD('PCF8574', I2C_ADDR, port=I2C_PORT, cols=16, rows=2, auto_linebreaks=False)
 
 def safe_write(line1, line2):
