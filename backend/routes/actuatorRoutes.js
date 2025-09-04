@@ -38,6 +38,60 @@ router.post('/light', async (req, res) => {
   }
 });
 
+// Control led RGB
+router.post('/light/rgb', async (req, res) => {
+  try {
+    const { room = 'default', color, rgb, hex, brightness } = req.body;
+    
+    let command = {
+      room: room,
+      timestamp: new Date().toISOString()
+    };
+    
+    if (color) {
+      command.color = color;
+    }
+    
+    if (rgb) {
+      command.rgb = rgb;
+    }
+    
+    if (hex) {
+      command.hex = hex;
+    }
+    
+    if (brightness !== undefined) {
+      command.brightness = Math.max(0, Math.min(100, brightness));
+    }
+    
+    // Publicar comando a MQTT
+    mqttService.publishMessage(`/illumination/room/${room}/control`, JSON.stringify(command));
+    
+    // Guardar en base de datos
+    const reading = new SensorReading({
+      type: 'light',
+      value: color || hex || JSON.stringify(rgb),
+      description: `RGB LED ${room}`,
+      status: true,
+      color: color || hex,
+      location: room,
+      device: 'rgb_led'
+    });
+    
+    await reading.save();
+    
+    res.json({ 
+      success: true, 
+      message: 'Comando de LED RGB enviado',
+      command: command
+    });
+    
+  } catch (error) {
+    console.error('Error controlando LED RGB:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
 // Control de puerta
 router.post('/door', async (req, res) => {
   try {
