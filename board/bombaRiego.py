@@ -54,6 +54,7 @@ class PumpService:
     def _on_connect(self, client, userdata, flags, rc):
         try:
             client.subscribe("/pump")
+            client.subscribe("/pump/status")
         except Exception:
             pass
 
@@ -66,7 +67,8 @@ class PumpService:
             data = json.loads(payload_str)
         except Exception:
             data = {"state": payload_str.strip()}
-        self._handle_command(data)
+        if msg.topic.startswith("/pump"):
+            self._handle_command(data)
 
     def _handle_command(self, data):
         try:

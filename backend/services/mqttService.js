@@ -1,22 +1,18 @@
 const mqtt = require("mqtt");
 const SensorReading = require("../models/SensorReading");
+
 function sanitizeReading(doc) {
   if (!doc) return null;
   const obj = typeof doc.toObject === "function" ? doc.toObject() : doc;
-
   const safeDateToISOString = (d) => {
     if (!d) return undefined;
     const dt = new Date(d);
     return !isNaN(dt.getTime()) ? dt.toISOString() : undefined;
   };
-
   const out = {
     id: obj._id ? String(obj._id) : undefined,
     type: obj.type,
-    value:
-      typeof obj.value !== "undefined" && obj.value !== null
-        ? obj.value
-        : undefined,
+    value: obj.value !== undefined && obj.value !== null ? obj.value : undefined,
     timestamp: safeDateToISOString(obj.timestamp),
     deviceTimestamp: safeDateToISOString(obj.deviceTimestamp),
     unit: obj.unit || undefined,
@@ -28,7 +24,6 @@ function sanitizeReading(doc) {
     pin: obj.pin || undefined,
     device: obj.device || undefined,
   };
-
   Object.keys(out).forEach((k) => out[k] === undefined && delete out[k]);
   return out;
 }
@@ -36,11 +31,48 @@ function sanitizeReading(doc) {
 class MQTTService {
   constructor() {
     this.client = null;
+    this.client2 = null;
     this.isConnected = false;
-  // Estado simple para evitar spam de mensajes de encendido
-  this.fanAlreadyOn = false; // asumimos apagado inicialmente
-  this.lastFanOnTs = 0;
-  this.lastFanChangeTs = 0; // control anti-spam para cualquier cambio
+    // Ventilador
+    this.fanAlreadyOn = false;
+    this.lastFanOnTs = 0;
+    this.lastFanChangeTs = 0;
+    // Bomba
+    this.pumpOn = false;
+    this.lastPumpChangeTs = 0;
+    this.lastPumpRecordedState = null;
+    this.pumpAutoEnabled = process.env.PUMP_AUTO_ENABLED !== 'false';
+    this.pumpDryThreshold = Number(process.env.PUMP_DRY_THRESHOLD || 30);
+    this.pumpWetThreshold = Number(process.env.PUMP_WET_THRESHOLD || 40);
+    if (this.pumpWetThreshold <= this.pumpDryThreshold) {
+      this.pumpWetThreshold = this.pumpDryThreshold + 5;
+    }
+    this.pumpDigitalDryValue = Number(process.env.PUMP_DIGITAL_DRY || 0);
+    this.minPumpOnMs = Number(process.env.MIN_PUMP_ON_MS || 10000);
+    this.minPumpChangeIntervalMs = Number(process.env.MIN_PUMP_CHANGE_INTERVAL_MS || 5000);
+  }
+
+  getPumpAutoConfig() {
+    return {
+      enabled: this.pumpAutoEnabled,
+      dryThreshold: this.pumpDryThreshold,
+      wetThreshold: this.pumpWetThreshold,
+      digitalDryValue: this.pumpDigitalDryValue,
+      minPumpOnMs: this.minPumpOnMs,
+      minPumpChangeIntervalMs: this.minPumpChangeIntervalMs,
+      currentState: this.pumpOn ? 'on' : 'off'
+    };
+  }
+
+  setPumpAutoConfig(cfg = {}) {
+    if (typeof cfg.enabled === 'boolean') this.pumpAutoEnabled = cfg.enabled;
+    if (typeof cfg.dryThreshold === 'number' && !isNaN(cfg.dryThreshold)) this.pumpDryThreshold = cfg.dryThreshold;
+    if (typeof cfg.wetThreshold === 'number' && !isNaN(cfg.wetThreshold)) this.pumpWetThreshold = cfg.wetThreshold;
+    if (typeof cfg.digitalDryValue === 'number' && !isNaN(cfg.digitalDryValue)) this.pumpDigitalDryValue = cfg.digitalDryValue;
+    if (typeof cfg.minPumpOnMs === 'number' && !isNaN(cfg.minPumpOnMs)) this.minPumpOnMs = cfg.minPumpOnMs;
+    if (typeof cfg.minPumpChangeIntervalMs === 'number' && !isNaN(cfg.minPumpChangeIntervalMs)) this.minPumpChangeIntervalMs = cfg.minPumpChangeIntervalMs;
+    if (this.pumpWetThreshold <= this.pumpDryThreshold) this.pumpWetThreshold = this.pumpDryThreshold + 1;
+    return this.getPumpAutoConfig();
   }
 
   connect() {
@@ -66,6 +98,8 @@ class MQTTService {
       "/humedad_aire",
       "/humedad_suelo",
       "/fan",
+  "/pump",
+  "/pump/status"
     ];
     const secondaryTopics = [
       "/illumination",
@@ -167,6 +201,10 @@ class MQTTService {
           if (data && typeof data.state === "string") {
             this.fanAlreadyOn = data.state.toLowerCase() === "on";
           }
+          break;
+        case "/pump":
+        case "/pump/status":
+          await this.processPump(data);
           break;
         default:
           console.log(`No hay procesamiento definido para el tema: ${topic}`);
@@ -379,8 +417,92 @@ class MQTTService {
       if (global && typeof global.emitUpdate === "function")
         global.emitUpdate("sensor_update", sanitizeReading(reading));
       console.log("Registro de humedad de suelo guardado:", reading._id);
+
+      // Evaluar control automático de bomba
+      try {
+        await this.evaluatePumpAuto({ value: reading.value, unit: reading.unit });
+      } catch (e) {
+        console.error('Error evaluando bomba automática:', e);
+      }
     } catch (error) {
       console.error("Error procesando humedad de suelo:", error);
+    }
+  }
+
+  async processPump(data) {
+    try {
+      const raw = data.state || data.value || data.pump;
+      if (!raw) return;
+      const st = String(raw).toLowerCase();
+      if (!['on','off','true','false','1','0'].includes(st)) return;
+      const isOn = ['on','true','1'].includes(st);
+
+      // Evitar registrar duplicados si estado no cambia
+      if (this.lastPumpRecordedState === (isOn ? 'on' : 'off')) return;
+      this.lastPumpRecordedState = isOn ? 'on' : 'off';
+      this.pumpOn = isOn;
+      this.lastPumpChangeTs = Date.now();
+
+      const reading = new SensorReading({
+        type: 'pump',
+        value: isOn ? 'on' : 'off',
+        status: isOn,
+        description: isOn ? 'Bomba activada' : 'Bomba desactivada',
+        location: data.location || 'garden',
+        device: data.device || (data.source ? `pump_${data.source}` : 'water_pump')
+      });
+      await reading.save();
+      if (global && typeof global.emitUpdate === 'function') {
+        global.emitUpdate('sensor_update', sanitizeReading(reading));
+      }
+      console.log('Registro de bomba guardado:', reading.value);
+    } catch (e) {
+      console.error('Error procesando/registrando bomba:', e);
+    }
+  }
+
+  async evaluatePumpAuto({ value, unit }) {
+    if (!this.pumpAutoEnabled) return;
+    if (typeof value !== 'number' || isNaN(value)) return;
+
+    const now = Date.now();
+    const sinceLast = now - this.lastPumpChangeTs;
+
+    let shouldOn = false;
+    let shouldOff = false;
+
+    if (unit === '%') {
+      if (!this.pumpOn && value <= this.pumpDryThreshold) shouldOn = true;
+      if (this.pumpOn && value >= this.pumpWetThreshold) shouldOff = true;
+    } else if (unit === 'digital') {
+      // digitalDryValue representa estado seco -> encender
+      if (!this.pumpOn && value === this.pumpDigitalDryValue) shouldOn = true;
+      if (this.pumpOn && value !== this.pumpDigitalDryValue) shouldOff = true;
+    } else {
+      // Si no hay unidad, intentar heurística: valores bajos = seco (<=dry threshold)
+      if (!this.pumpOn && value <= this.pumpDryThreshold) shouldOn = true;
+      if (this.pumpOn && value >= this.pumpWetThreshold) shouldOff = true;
+    }
+
+    // Anti-spam cambios muy seguidos
+    if (sinceLast < this.minPumpChangeIntervalMs) return;
+
+    // Garantizar tiempo mínimo de encendido antes de apagar
+    if (shouldOff && this.pumpOn && sinceLast < this.minPumpOnMs) {
+      return;
+    }
+
+    if (shouldOn) {
+      await this.publishMessage('/pump', { state: 'on', source: 'auto_soil', value, unit });
+      // processPump se encargará de registrar al recibirse (si llega loopback). Si no, registrar directo fallback:
+      if (this.lastPumpRecordedState !== 'on') {
+        await this.processPump({ state: 'on', source: 'auto_soil', value, unit });
+      }
+    } else if (shouldOff) {
+      await this.publishMessage('/pump', { state: 'off', source: 'auto_soil', value, unit });
+      if (this.lastPumpRecordedState !== 'off') {
+        await this.processPump({ state: 'off', source: 'auto_soil', value, unit });
+      }
     }
   }
 
@@ -407,6 +529,7 @@ class MQTTService {
         "/humedad_aire",
         "/humedad_suelo",
         "/fan",
+  "/pump"
       ]);
       const clientToUse = primaryTopicsSet.has(topic)
         ? this.client || this.client2
