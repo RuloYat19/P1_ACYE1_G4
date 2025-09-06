@@ -6,13 +6,10 @@ const useDev = process.env.USE_DEV === 'true' || false;
 
 const router = express.Router();
 
-// Utility: sanitize a DB reading before sending al cliente
 function sanitizeReading(doc) {
   if (!doc) return null;
-  // si es un documento de mongoose
   const obj = typeof doc.toObject === 'function' ? doc.toObject() : doc;
 
-  // Guardar fechas sólo si son válidas para evitar toISOString() sobre Invalid Date
   const safeDateToISOString = (d) => {
     if (!d) return undefined;
     const dt = new Date(d);
@@ -174,10 +171,43 @@ router.get('/chart', async (req, res) => {
       count: item.values.length
     }));
 
+
+
     res.json(chartData);
   } catch (error) {
     console.error('Error obteniendo datos de gráfica:', error);
     res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
+router.post('/readings', async (req, res) => {
+  try {
+    const body = req.body;
+    if (!body || !body.type || typeof body.value === 'undefined') {
+      return res.status(400).json({ error: 'Payload inválido - se requiere type y value' });
+    }
+
+    const reading = new SensorReading({
+      type: body.type,
+      value: body.value,
+      unit: body.unit || null,
+      description: body.description || null,
+      status: typeof body.status === 'boolean' ? body.status : null,
+      location: body.location || null,
+      device: body.device || null,
+      pin: body.pin || null,
+      connected: typeof body.connected === 'boolean' ? body.connected : null,
+      deviceTimestamp: body.deviceTimestamp ? new Date(body.deviceTimestamp) : null
+    });
+
+    await reading.save();
+    if (global && typeof global.emitUpdate === 'function') {
+      global.emitUpdate('sensor_update', sanitizeReading(reading));
+    }
+    return res.status(201).json({ success: true, reading: sanitizeReading(reading) });
+  } catch (error) {
+    console.error('Error guardando lectura desde dispositivo:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
 

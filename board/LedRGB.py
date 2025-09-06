@@ -2,7 +2,6 @@ import os
 import time
 import json
 import threading
-import argparse
 
 try:
     import RPi.GPIO as GPIO
@@ -11,8 +10,8 @@ except Exception:
 
 import paho.mqtt.client as mqtt
 
-class LedRGB:
-    def __init__(self, red_pin=33, green_pin=32, blue_pin=12):
+class RGBLEDService:
+    def __init__(self, red_pin=13, green_pin=12, blue_pin=18):
         self.red_pin = red_pin
         self.green_pin = green_pin
         self.blue_pin = blue_pin
@@ -25,35 +24,39 @@ class LedRGB:
         
         self.client = None
         self.current_color = {"red": 0, "green": 0, "blue": 0}
-        self._setup_gpio()
-        self._setup_mqtt()
-
+        self._stop = threading.Event()
+        self._thread = None
+        self.rgb_pwm = None
+        
     def _setup_gpio(self):
         if GPIO is None:
-            print("GPIO not available")
+            print("GPIO not available - modo simulacion")
             return
             
-        GPIO.setmode(GPIO.BCM)
-        GPIO.setup(self.red_pin, GPIO.OUT)
-        GPIO.setup(self.green_pin, GPIO.OUT)
-        GPIO.setup(self.blue_pin, GPIO.OUT)
-        
-        # Configurar PWM para control de intensidad
-        self.red_pwm = GPIO.PWM(self.red_pin, 1000)    # 1kHz
-        self.green_pwm = GPIO.PWM(self.green_pin, 1000)
-        self.blue_pwm = GPIO.PWM(self.blue_pin, 1000)
-        
-        # Iniciar PWM con 0% duty cycle (LED apagado)
-        self.red_pwm.start(0)
-        self.green_pwm.start(0)
-        self.blue_pwm.start(0)
+        try:
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.red_pin, GPIO.OUT)
+            GPIO.setup(self.green_pin, GPIO.OUT)
+            GPIO.setup(self.blue_pin, GPIO.OUT)
+            
+            self.rgb_pwm = {
+                'red': GPIO.PWM(self.red_pin, 1000),
+                'green': GPIO.PWM(self.green_pin, 1000),
+                'blue': GPIO.PWM(self.blue_pin, 1000)
+            }
+            
+            for pwm in self.rgb_pwm.values():
+                pwm.start(0)
+            
+            print(f"RGB LED configurado: R={self.red_pin}, G={self.green_pin}, B={self.blue_pin}")
+        except Exception as e:
+            print(f"Error configurando GPIO: {e}")
 
     def _setup_mqtt(self):
         self.client = mqtt.Client(client_id=self.mqtt_client_id)
         self.client.username_pw_set(self.mqtt_user, self.mqtt_pass)
         self.client.tls_set()
         
-        # Callback para mensajes recibidos
         self.client.on_message = self._on_message
         self.client.on_connect = self._on_connect
         
@@ -64,66 +67,74 @@ class LedRGB:
             print(f"Error conectando a MQTT: {e}")
 
     def _on_connect(self, client, userdata, flags, rc):
-        print(f"Conectado a MQTT con código: {rc}")
-        # Suscribirse al canal de control de iluminación
-        client.subscribe("/illumination/control")
-        client.subscribe("/illumination/room/+/control")
+        print(f"RGB LED conectado a MQTT con codigo: {rc}")
+        client.subscribe("/ilumination/control")
+        client.subscribe("/ilumination/room/+/control")
 
     def _on_message(self, client, userdata, msg):
         try:
             topic = msg.topic
-            payload = json.loads(msg.payload.decode())
-            print(f"Mensaje recibido en {topic}: {payload}")
+            payload_str = msg.payload.decode()
+            print(f"RGB comando recibido en {topic}: {payload_str}")
             
-            if "color" in payload:
-                self.set_color_from_payload(payload)
-            elif "rgb" in payload:
-                self.set_rgb(payload["rgb"])
-            elif "hex" in payload:
-                self.set_hex_color(payload["hex"])
+            try:
+                data = json.loads(payload_str)
+            except json.JSONDecodeError as e:
+                print(f"Error parseando JSON: {e}")
+                data = {"color": payload_str.strip()}
+            
+            if "color" in data:
+                self.set_color_from_payload(data)
+            elif "rgb" in data:
+                self.set_rgb(data["rgb"])
+            elif "hex" in data:
+                self.set_hex_color(data["hex"])
                 
         except Exception as e:
-            print(f"Error procesando mensaje: {e}")
+            print(f"Error procesando mensaje RGB: {e}")
 
     def set_rgb(self, rgb_values):
         """Establecer color RGB con valores 0-255"""
-        if GPIO is None:
-            print(f"Simulando RGB: R={rgb_values['r']}, G={rgb_values['g']}, B={rgb_values['b']}")
+        if not self.rgb_pwm:
+            print(f"Simulando RGB: R={rgb_values.get('r', 0)}, G={rgb_values.get('g', 0)}, B={rgb_values.get('b', 0)}")
+            self.current_color = {"red": rgb_values.get('r', 0), "green": rgb_values.get('g', 0), "blue": rgb_values.get('b', 0)}
+            self.publish_status()
             return
             
-        r = max(0, min(255, rgb_values.get('r', 0)))
-        g = max(0, min(255, rgb_values.get('g', 0)))
-        b = max(0, min(255, rgb_values.get('b', 0)))
-        
-        # Convertir 0-255 a 0-100 para PWM
-        r_duty = (r / 255.0) * 100
-        g_duty = (g / 255.0) * 100
-        b_duty = (b / 255.0) * 100
-        
-        self.red_pwm.ChangeDutyCycle(r_duty)
-        self.green_pwm.ChangeDutyCycle(g_duty)
-        self.blue_pwm.ChangeDutyCycle(b_duty)
-        
-        self.current_color = {"red": r, "green": g, "blue": b}
-        
-        # Publicar estado actual
-        self.publish_status()
-        print(f"Color establecido: R={r}, G={g}, B={b}")
+        try:
+            r = max(0, min(255, rgb_values.get('r', 0)))
+            g = max(0, min(255, rgb_values.get('g', 0)))
+            b = max(0, min(255, rgb_values.get('b', 0)))
+            
+            r_duty = (r / 255.0) * 100
+            g_duty = (g / 255.0) * 100
+            b_duty = (b / 255.0) * 100
+            
+            self.rgb_pwm['red'].ChangeDutyCycle(r_duty)
+            self.rgb_pwm['green'].ChangeDutyCycle(g_duty)
+            self.rgb_pwm['blue'].ChangeDutyCycle(b_duty)
+            
+            self.current_color = {"red": r, "green": g, "blue": b}
+            self.publish_status()
+            print(f"Color RGB establecido: R={r}, G={g}, B={b}")
+        except Exception as e:
+            print(f"Error estableciendo RGB: {e}")
 
     def set_hex_color(self, hex_color):
-        """Establecer color desde código hexadecimal"""
+        """Establecer color desde codigo hexadecimal"""
         hex_color = hex_color.lstrip('#')
         if len(hex_color) == 6:
-            r = int(hex_color[0:2], 16)
-            g = int(hex_color[2:4], 16)
-            b = int(hex_color[4:6], 16)
-            self.set_rgb({"r": r, "g": g, "b": b})
-
+            try:
+                r = int(hex_color[0:2], 16)
+                g = int(hex_color[2:4], 16)
+                b = int(hex_color[4:6], 16)
+                self.set_rgb({"r": r, "g": g, "b": b})
+            except ValueError as e:
+                print(f"Error convirtiendo hex {hex_color}: {e}")
     def set_color_from_payload(self, payload):
         """Establecer color desde payload con diferentes formatos"""
-        color = payload["color"].lower()
+        color = payload["color"].lower().strip()
         
-        # Colores predefinidos
         colors = {
             "rojo": {"r": 255, "g": 0, "b": 0},
             "red": {"r": 255, "g": 0, "b": 0},
@@ -131,14 +142,6 @@ class LedRGB:
             "green": {"r": 0, "g": 255, "b": 0},
             "azul": {"r": 0, "g": 0, "b": 255},
             "blue": {"r": 0, "g": 0, "b": 255},
-            "amarillo": {"r": 255, "g": 255, "b": 0},
-            "yellow": {"r": 255, "g": 255, "b": 0},
-            "morado": {"r": 128, "g": 0, "b": 128},
-            "purple": {"r": 128, "g": 0, "b": 128},
-            "cyan": {"r": 0, "g": 255, "b": 255},
-            "magenta": {"r": 255, "g": 0, "b": 255},
-            "blanco": {"r": 255, "g": 255, "b": 255},
-            "white": {"r": 255, "g": 255, "b": 255},
             "off": {"r": 0, "g": 0, "b": 0},
             "apagado": {"r": 0, "g": 0, "b": 0}
         }
@@ -147,9 +150,14 @@ class LedRGB:
             self.set_rgb(colors[color])
         elif color.startswith('#'):
             self.set_hex_color(color)
+        else:
+            print(f"Color no reconocido: {color}")
 
     def publish_status(self):
         """Publicar estado actual del LED"""
+        if not self.client:
+            return
+            
         status_data = {
             "type": "light",
             "device": "rgb_led",
@@ -163,69 +171,78 @@ class LedRGB:
         }
         
         try:
-            self.client.publish("/illumination", json.dumps(status_data))
-            print(f"Estado publicado: {status_data}")
+            self.client.publish("/ilumination", json.dumps(status_data))
         except Exception as e:
-            print(f"Error publicando estado: {e}")
+            print(f"Error publicando estado RGB: {e}")
 
-    def test_colors(self):
-        """Función para probar diferentes colores"""
-        test_colors = [
-            {"name": "Rojo", "rgb": {"r": 255, "g": 0, "b": 0}},
-            {"name": "Verde", "rgb": {"r": 0, "g": 255, "b": 0}},
-            {"name": "Azul", "rgb": {"r": 0, "g": 0, "b": 255}},
-            {"name": "Amarillo", "rgb": {"r": 255, "g": 255, "b": 0}},
-            {"name": "Morado", "rgb": {"r": 128, "g": 0, "b": 128}},
-            {"name": "Cyan", "rgb": {"r": 0, "g": 255, "b": 255}},
-            {"name": "Blanco", "rgb": {"r": 255, "g": 255, "b": 255}},
-            {"name": "Apagado", "rgb": {"r": 0, "g": 0, "b": 0}}
-        ]
+    def loop(self):
+        """Loop principal del servicio RGB"""
+        self._setup_gpio()
+        self._setup_mqtt()
         
-        for color in test_colors:
-            print(f"Probando color: {color['name']}")
-            self.set_rgb(color['rgb'])
-            time.sleep(2)
+        try:
+            while not self._stop.is_set():
+                time.sleep(1)
+        finally:
+            self.cleanup()
 
+    def start(self):
+        """Iniciar servicio RGB"""
+        self._stop.clear()
+        t = threading.Thread(target=self.loop, daemon=True)
+        t.start()
+        self._thread = t
+        print("RGB LED service iniciado")
+
+    def stop(self):
+        """Detener servicio RGB"""
+        self._stop.set()
+        if self._thread:
+            self._thread.join(timeout=2)
+        print("RGB LED service detenido")
     def cleanup(self):
         """Limpiar recursos"""
+        if self.rgb_pwm:
+            try:
+                for pwm in self.rgb_pwm.values():
+                    pwm.ChangeDutyCycle(0)
+                    pwm.stop()
+            except:
+                pass
+        
         if GPIO:
-            self.red_pwm.stop()
-            self.green_pwm.stop()
-            self.blue_pwm.stop()
-            GPIO.cleanup()
+            try:
+                GPIO.cleanup()
+            except:
+                pass
         
         if self.client:
-            self.client.loop_stop()
-            self.client.disconnect()
-
+            try:
+                self.client.loop_stop()
+                self.client.disconnect()
+            except:
+                pass
 def main():
+    import argparse
+    
     parser = argparse.ArgumentParser(description='Control de LED RGB via MQTT')
-    parser.add_argument('--red-pin', type=int, default=18, help='Pin GPIO para LED rojo')
-    parser.add_argument('--green-pin', type=int, default=19, help='Pin GPIO para LED verde')
-    parser.add_argument('--blue-pin', type=int, default=20, help='Pin GPIO para LED azul')
-    parser.add_argument('--test', action='store_true', help='Ejecutar prueba de colores')
+    parser.add_argument('--red-pin', type=int, default=13, help='Pin GPIO para LED rojo')
+    parser.add_argument('--green-pin', type=int, default=12, help='Pin GPIO para LED verde')
+    parser.add_argument('--blue-pin', type=int, default=18, help='Pin GPIO para LED azul')
     
     args = parser.parse_args()
     
-    controller = RGBLEDController(args.red_pin, args.green_pin, args.blue_pin)
+    service = RGBLEDService(args.red_pin, args.green_pin, args.blue_pin)
     
     try:
-        if args.test:
-            print("Ejecutando prueba de colores...")
-            controller.test_colors()
-        else:
-            print("Controlador RGB iniciado. Esperando comandos MQTT...")
-            print("Tópicos de escucha:")
-            print("  - /illumination/control")
-            print("  - /illumination/room/+/control")
-            
-            while True:
-                time.sleep(1)
-                
+        service.start()
+        print("RGB LED service iniciado. Presiona Ctrl+C para detener...")
+        while True:
+            time.sleep(1)
     except KeyboardInterrupt:
-        print("Deteniendo controlador...")
+        print("Deteniendo RGB LED service...")
     finally:
-        controller.cleanup()
+        service.stop()
 
 if __name__ == "__main__":
     main()

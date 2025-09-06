@@ -13,23 +13,30 @@ router.post('/light', async (req, res) => {
       return res.status(400).json({ error: 'Se requiere habitación y estado' });
     }
 
-    // Publicar mensaje MQTT
-    await mqttService.publishMessage('/illumination', { room, state, color });
+    // Publicar mensaje MQTT con habitación específica
+    await mqttService.publishMessage('/ilumination', { 
+      room: room.toLowerCase(), 
+      state, 
+      color 
+    });
 
     // Registrar en la base de datos
     const reading = new SensorReading({
       type: 'light',
-      value: color || state,
-      description: room,
+      value: state,
+      description: `LED ${room}`,
       status: state === 'on',
       color: color,
-      location: room
+      location: room,
+      device: 'room_led'
     });
     await reading.save();
 
     res.json({
       success: true,
       message: `Luz ${state === 'on' ? 'encendida' : 'apagada'} en ${room}`,
+      room: room,
+      state: state,
       data: reading
     });
   } catch (error) {
@@ -37,6 +44,26 @@ router.post('/light', async (req, res) => {
     res.status(500).json({ error: 'Error controlando iluminación' });
   }
 });
+
+//servo
+router.post('/servo', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const action = (body.action || body.position || (body.open ? 'open' : undefined));
+    if (!action || action !== 'open') {
+      return res.status(400).json({ error: 'Se requiere action: "open"' });
+    }
+  const topic = '/door';
+  const message = { action: 'open' };
+  await mqttService.publishMessage(topic, message);
+    return res.status(200).json({ success: true, topic, message });
+  } catch (error) {
+    console.error('Error controlando servo:', error);
+    return res.status(500).json({ error: 'Error interno' });
+  }
+});
+
+module.exports = router;
 
 // Control led RGB
 router.post('/light/rgb', async (req, res) => {
@@ -65,7 +92,7 @@ router.post('/light/rgb', async (req, res) => {
     }
     
     // Publicar comando a MQTT
-    mqttService.publishMessage(`/illumination/room/${room}/control`, JSON.stringify(command));
+    mqttService.publishMessage(`/ilumination/control`, command);
     
     // Guardar en base de datos
     const reading = new SensorReading({
@@ -88,6 +115,22 @@ router.post('/light/rgb', async (req, res) => {
     
   } catch (error) {
     console.error('Error controlando LED RGB:', error);
+    res.status(500).json({ error: 'Error interno del servidor' });
+  }
+});
+
+// Obtener estado actual de LEDs
+router.get('/lights/status', async (req, res) => {
+  try {
+    const latestLights = await SensorReading.find({ 
+      type: 'light' 
+    })
+    .sort({ timestamp: -1 })
+    .limit(10);
+    
+    res.json(latestLights);
+  } catch (error) {
+    console.error('Error obteniendo estado de luces:', error);
     res.status(500).json({ error: 'Error interno del servidor' });
   }
 });
@@ -161,28 +204,28 @@ router.post('/pump', async (req, res) => {
 // Control de ventilador
 router.post('/fan', async (req, res) => {
   try {
-    const { state, temperature } = req.body;
+    const { fan, state } = req.body || {};
+    const raw = typeof state === 'string' ? state : fan;
+    const value = typeof raw === 'string' ? raw.toLowerCase().trim() : null;
 
-    if (typeof state !== 'boolean') {
-      return res.status(400).json({ error: 'Se requiere estado (true/false)' });
+    if (!value || !['on', 'off'].includes(value)) {
+      return res.status(400).json({ error: 'Se requiere "state" o "fan" con valor "on" u "off"' });
     }
 
-    // Publicar mensaje MQTT
-    await mqttService.publishMessage('/fan', { state, temperature });
+    await mqttService.publishMessage('/fan', { state: value });
 
-    // Registrar en la base de datos
     const reading = new SensorReading({
       type: 'fan',
-      value: state ? 'on' : 'off',
-      description: `Ventilador - Temperatura: ${temperature || 'N/A'}°C`,
-      status: state,
+      value,
+      description: 'Ventilador',
+      status: value === 'on',
       location: 'interior'
     });
     await reading.save();
 
     res.json({
       success: true,
-      message: `Ventilador ${state ? 'activado' : 'desactivado'}`,
+      message: `Ventilador ${value === 'on' ? 'activado' : 'desactivado'}`,
       data: reading
     });
   } catch (error) {
