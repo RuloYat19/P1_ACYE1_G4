@@ -37,6 +37,9 @@ class MQTTService {
   constructor() {
     this.client = null;
     this.isConnected = false;
+  // Estado simple para evitar spam de mensajes de encendido
+  this.fanAlreadyOn = false; // asumimos apagado inicialmente
+  this.lastFanOnTs = 0;
   }
 
   connect() {
@@ -158,6 +161,12 @@ class MQTTService {
         case "/motion":
           await this.processMotion(data);
           break;
+        case "/fan":
+          // Actualizar estado simple si algún otro componente envía estado
+          if (data && typeof data.state === "string") {
+            this.fanAlreadyOn = data.state.toLowerCase() === "on";
+          }
+          break;
         default:
           console.log(`No hay procesamiento definido para el tema: ${topic}`);
       }
@@ -235,6 +244,21 @@ class MQTTService {
     if (global && typeof global.emitUpdate === "function")
       global.emitUpdate("sensor_update", sanitizeReading(reading));
     console.log("Registro de temperatura guardado:", reading._id);
+
+    try {
+      const threshold = 20; 
+      if (reading.value >= threshold) {
+        const now = Date.now();
+        if (!this.fanAlreadyOn || now - this.lastFanOnTs > 5000) {
+          await this.publishMessage("/fan", { state: "on", source: "backend", reason: `temp>=${threshold}` });
+          this.fanAlreadyOn = true;
+          this.lastFanOnTs = now;
+          console.log(`Ventilador activado por temperatura (${reading.value}°C >= ${threshold}°C)`);
+        }
+      }
+    } catch (e) {
+      console.error("Error en lógica simple de ventilador:", e);
+    }
   }
 
   async processHumidity(data) {
