@@ -1,7 +1,6 @@
 const express = require('express');
 const SensorReading = require('../models/SensorReading');
 let devSeed = null;
-// Feature flag to enable development in-memory seed data (set USE_DEV=true in .env to enable)
 const useDev = process.env.USE_DEV === 'true' || false;
 
 const router = express.Router();
@@ -32,7 +31,6 @@ function sanitizeReading(doc) {
     device: obj.device || undefined
   };
 
-  // Remove undefined values
   Object.keys(out).forEach(k => out[k] === undefined && delete out[k]);
   return out;
 }
