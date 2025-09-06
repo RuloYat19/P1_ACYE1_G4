@@ -24,6 +24,8 @@
 ![Foto2](Imagenes/I12.png)
 
 ## Colecciones de MongoDB
+Colecciones de Mongo que se tienen planeado implementar en el proyecto
+![Foto2](Imagenes/I29.png)
 
 ## Esquema del proyecto
 ![Foto4](Imagenes/I19.png)
