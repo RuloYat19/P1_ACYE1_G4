@@ -12,7 +12,7 @@ dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
-const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:3000').split(',').map(u => u.trim());
+const allowedOrigins = (process.env.FRONTEND_URLS || process.env.FRONTEND_URL || 'http://localhost:5173').split(',').map(u => u.trim());
 
 const io = socketIo(server, {
   cors: {

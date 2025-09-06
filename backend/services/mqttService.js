@@ -1,5 +1,37 @@
 const mqtt = require("mqtt");
 const SensorReading = require("../models/SensorReading");
+function sanitizeReading(doc) {
+  if (!doc) return null;
+  const obj = typeof doc.toObject === "function" ? doc.toObject() : doc;
+
+  const safeDateToISOString = (d) => {
+    if (!d) return undefined;
+    const dt = new Date(d);
+    return !isNaN(dt.getTime()) ? dt.toISOString() : undefined;
+  };
+
+  const out = {
+    id: obj._id ? String(obj._id) : undefined,
+    type: obj.type,
+    value:
+      typeof obj.value !== "undefined" && obj.value !== null
+        ? obj.value
+        : undefined,
+    timestamp: safeDateToISOString(obj.timestamp),
+    deviceTimestamp: safeDateToISOString(obj.deviceTimestamp),
+    unit: obj.unit || undefined,
+    description: obj.description || undefined,
+    status: typeof obj.status === "boolean" ? obj.status : undefined,
+    color: obj.color || undefined,
+    location: obj.location || undefined,
+    connected: typeof obj.connected === "boolean" ? obj.connected : undefined,
+    pin: obj.pin || undefined,
+    device: obj.device || undefined,
+  };
+
+  Object.keys(out).forEach((k) => out[k] === undefined && delete out[k]);
+  return out;
+}
 
 class MQTTService {
   constructor() {
@@ -8,10 +40,9 @@ class MQTTService {
   }
 
   connect() {
-    const options = {
-      host: process.env.MQTT_HOST || "your-cluster-url.hivemq.cloud",
+    const baseOptions = {
       port: process.env.MQTT_PORT || 8883,
-      protocol: "mqtts", 
+      protocol: "mqtts",
       username: process.env.MQTT_USERNAME,
       password: process.env.MQTT_PASSWORD,
       clientId:
@@ -23,37 +54,74 @@ class MQTTService {
       rejectUnauthorized: true,
     };
 
-    this.client = mqtt.connect(options);
+    const host1 = process.env.MQTT_HOST;
+    const host2 = process.env.MQTT_HOST2;
 
-    this.client.on("connect", () => {
-      console.log("Conectado a MQTT broker");
-      this.isConnected = true;
+    const primaryTopics = [
+      "/temperatura",
+      "/humedad_aire",
+      "/humedad_suelo",
+      "/fan",
+    ];
+    const secondaryTopics = [
+      "/illumination",
+      "/entrance",
+      "/alerts",
+      "/motion",
+      "/door/status",
+    ];
 
-      // Suscribirse a los temas relevantes
-      this.client.subscribe("/illumination", { qos: 0 });
-      this.client.subscribe("/entrance", { qos: 0 });
-      this.client.subscribe("/alerts", { qos: 0 });
-      // Suscribir a los topics usados por los scripts en la placa (español)
-      this.client.subscribe("/temperatura", { qos: 0 });
-      this.client.subscribe("/humedad_aire", { qos: 0 });
-      this.client.subscribe("/humedad_suelo", { qos: 0 });
-      this.client.subscribe("/motion", { qos: 0 });
-    });
+    // Connect primary client (host1)
+    if (host1) {
+      const opts1 = Object.assign({ host: host1 }, baseOptions);
+      this.client = mqtt.connect(opts1);
 
-    this.client.on("message", async (topic, message) => {
-      console.log(`Mensaje recibido en ${topic}:`, message.toString());
-      await this.processMessage(topic, message.toString());
-    });
+      this.client.on("connect", () => {
+        console.log("Conectado a MQTT broker (primary):", host1);
+        this.isConnected = true;
+        // suscribir tópicos primarios
+        primaryTopics.forEach((t) => this.client.subscribe(t, { qos: 0 }));
+      });
 
-    this.client.on("error", (error) => {
-      console.error("Error en MQTT:", error);
-      this.isConnected = false;
-    });
+      this.client.on("message", async (topic, message) => {
+        console.log(`Mensaje recibido en ${topic}:`, message.toString());
+        await this.processMessage(topic, message.toString());
+      });
 
-    this.client.on("offline", () => {
-      console.log("MQTT client offline");
-      this.isConnected = false;
-    });
+      this.client.on("error", (error) => {
+        console.error("Error en MQTT primary:", error);
+      });
+
+      this.client.on("offline", () => {
+        console.log("MQTT primary offline");
+      });
+    }
+
+    // Connect secondary client (host2) if provided
+    if (host2) {
+      const opts2 = Object.assign({ host: host2 }, baseOptions);
+      this.client2 = mqtt.connect(opts2);
+
+      this.client2.on("connect", () => {
+        console.log("Conectado a MQTT broker (secondary):", host2);
+        this.isConnected = true;
+        // suscribir tópicos secundarios
+        secondaryTopics.forEach((t) => this.client2.subscribe(t, { qos: 0 }));
+      });
+
+      this.client2.on("message", async (topic, message) => {
+        console.log(`Mensaje recibido en ${topic}:`, message.toString());
+        await this.processMessage(topic, message.toString());
+      });
+
+      this.client2.on("error", (error) => {
+        console.error("Error en MQTT secondary:", error);
+      });
+
+      this.client2.on("offline", () => {
+        console.log("MQTT secondary offline");
+      });
+    }
   }
 
   async processMessage(topic, message) {
@@ -70,6 +138,9 @@ class MQTTService {
           await this.processIllumination(data);
           break;
         case "/entrance":
+          await this.processEntrance(data);
+          break;
+        case "/door/status":
           await this.processEntrance(data);
           break;
         case "/alerts":
@@ -105,6 +176,8 @@ class MQTTService {
       location: data.room,
     });
     await reading.save();
+    if (global && typeof global.emitUpdate === "function")
+      global.emitUpdate("sensor_update", sanitizeReading(reading));
     console.log("Registro de iluminación guardado:", data);
   }
 
@@ -117,6 +190,8 @@ class MQTTService {
       location: "entrance",
     });
     await reading.save();
+    if (global && typeof global.emitUpdate === "function")
+      global.emitUpdate("sensor_update", sanitizeReading(reading));
     console.log("Registro de puerta guardado:", data);
   }
 
@@ -129,6 +204,8 @@ class MQTTService {
       location: data.location || "general",
     });
     await reading.save();
+    if (global && typeof global.emitUpdate === "function")
+      global.emitUpdate("sensor_update", sanitizeReading(reading));
     console.log("Registro de alerta guardado:", data);
   }
 
@@ -136,23 +213,27 @@ class MQTTService {
     const deviceTs = data.timestamp ? new Date(data.timestamp) : null;
     const timestamp = new Date(); // server timestamp
     const reading = new SensorReading({
-      type: 'temperature',
+      type: "temperature",
       value: isNaN(Number(data.temperature)) ? null : Number(data.temperature),
-      unit: '°C',
-      description: data.description || `Lectura ${data.device || 'DHT'} en ${data.location || 'interior'}`,
-      location: data.location || 'interior',
+      unit: "°C",
+      description:
+        data.description ||
+        `Lectura ${data.device || "DHT"} en ${data.location || "interior"}`,
+      location: data.location || "interior",
       device: data.device || null,
       deviceTimestamp: deviceTs,
-  timestamp,
-  pin: data.pin || null,
-  connected: typeof data.connected === 'boolean' ? data.connected : null
+      timestamp,
+      pin: data.pin || null,
+      connected: typeof data.connected === "boolean" ? data.connected : null,
     });
     // avoid saving entries with null value for temperature
     if (reading.value === null) {
-      console.log('Temperatura inválida, no se guarda:', data);
+      console.log("Temperatura inválida, no se guarda:", data);
       return;
     }
     await reading.save();
+    if (global && typeof global.emitUpdate === "function")
+      global.emitUpdate("sensor_update", sanitizeReading(reading));
     console.log("Registro de temperatura guardado:", reading._id);
   }
 
@@ -160,66 +241,74 @@ class MQTTService {
     const deviceTs = data.timestamp ? new Date(data.timestamp) : null;
     const timestamp = new Date();
     const reading = new SensorReading({
-      type: 'humidity',
+      type: "humidity",
       value: isNaN(Number(data.humidity)) ? null : Number(data.humidity),
-      unit: '%',
-      description: data.description || `Lectura ${data.device || 'DHT'} en ${data.location || 'interior'}`,
-      location: data.location || 'interior',
+      unit: "%",
+      description:
+        data.description ||
+        `Lectura ${data.device || "DHT"} en ${data.location || "interior"}`,
+      location: data.location || "interior",
       device: data.device || null,
       deviceTimestamp: deviceTs,
-  timestamp,
-  pin: data.pin || null,
-  connected: typeof data.connected === 'boolean' ? data.connected : null
+      timestamp,
+      pin: data.pin || null,
+      connected: typeof data.connected === "boolean" ? data.connected : null,
     });
     if (reading.value === null) {
-      console.log('Humedad inválida, no se guarda:', data);
+      console.log("Humedad inválida, no se guarda:", data);
       return;
     }
     await reading.save();
+    if (global && typeof global.emitUpdate === "function")
+      global.emitUpdate("sensor_update", sanitizeReading(reading));
     console.log("Registro de humedad guardado:", reading._id);
   }
 
   async processSoil(data) {
     try {
-        if (typeof data.connected === 'boolean' && data.connected === false) {
-          console.log('Lectura de humedad de suelo ignorada: sensor no conectado');
-          return;
-        }
+      if (typeof data.connected === "boolean" && data.connected === false) {
+        console.log(
+          "Lectura de humedad de suelo ignorada: sensor no conectado"
+        );
+        return;
+      }
       const timestamp = data.timestamp ? new Date(data.timestamp) : new Date();
       // Soil sensors may send digital 0/1 or percent
       let value = null;
       let unit = null;
-      if (typeof data.soil_moisture_digital !== 'undefined') {
+      if (typeof data.soil_moisture_digital !== "undefined") {
         value = Number(data.soil_moisture_digital);
-        unit = 'digital';
-      } else if (typeof data.percent !== 'undefined') {
+        unit = "digital";
+      } else if (typeof data.percent !== "undefined") {
         value = isNaN(Number(data.percent)) ? null : Number(data.percent);
-        unit = '%';
-      } else if (typeof data.value !== 'undefined') {
+        unit = "%";
+      } else if (typeof data.value !== "undefined") {
         // fallback
         value = isNaN(Number(data.value)) ? null : Number(data.value);
         unit = null;
       }
 
       const reading = new SensorReading({
-        type: 'soil',
+        type: "soil",
         value,
         unit,
         description: data.state || null,
         location: data.location || null,
         device: data.device || null,
         pin: data.pin || null,
-        connected: typeof data.connected === 'boolean' ? data.connected : null,
+        connected: typeof data.connected === "boolean" ? data.connected : null,
         timestamp,
       });
 
       if (reading.value === null) {
-        console.log('Humedad de suelo inválida, no se guarda:', data);
+        console.log("Humedad de suelo inválida, no se guarda:", data);
         return;
       }
 
       await reading.save();
-      console.log('Registro de humedad de suelo guardado:', reading._id);
+      if (global && typeof global.emitUpdate === "function")
+        global.emitUpdate("sensor_update", sanitizeReading(reading));
+      console.log("Registro de humedad de suelo guardado:", reading._id);
     } catch (error) {
       console.error("Error procesando humedad de suelo:", error);
     }
@@ -235,18 +324,30 @@ class MQTTService {
         location: data.location || "exterior",
       });
       await reading.save();
+      if (global && typeof global.emitUpdate === "function")
+        global.emitUpdate("sensor_update", sanitizeReading(reading));
       console.log("Registro de movimiento guardado:", data);
     }
   }
 
   publishMessage(topic, message) {
     return new Promise((resolve, reject) => {
-      if (!this.isConnected) {
-        reject(new Error("MQTT client not connected"));
+      const primaryTopicsSet = new Set([
+        "/temperatura",
+        "/humedad_aire",
+        "/humedad_suelo",
+        "/fan",
+      ]);
+      const clientToUse = primaryTopicsSet.has(topic)
+        ? this.client || this.client2
+        : this.client2 || this.client;
+
+      if (!clientToUse) {
+        reject(new Error("No MQTT client available to publish"));
         return;
       }
 
-      this.client.publish(topic, JSON.stringify(message), (error) => {
+      clientToUse.publish(topic, JSON.stringify(message), (error) => {
         if (error) {
           console.error(`Error publicando en ${topic}:`, error);
           reject(error);

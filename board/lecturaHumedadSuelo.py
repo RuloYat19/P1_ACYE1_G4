@@ -14,9 +14,9 @@ class SoilPublisher:
     def __init__(self, period=5.0, pin=26):
         self.period = period
         self.pin = pin
-        self.mqtt_host = os.environ.get("MQTT_HOST", "64430c7064d64067b68c5e59cd48a827.s1.eu.hivemq.cloud")
+        self.mqtt_host = os.environ.get("MQTT_HOST", "9a9751de0a5f4cf48ef00e50f9450e27.s1.eu.hivemq.cloud")
         self.mqtt_port = int(os.environ.get("MQTT_PORT", "8883"))
-        self.mqtt_user = os.environ.get("MQTT_USERNAME", "keneth")
+        self.mqtt_user = os.environ.get("MQTT_USERNAME", "isaac")
         self.mqtt_pass = os.environ.get("MQTT_PASSWORD", "ArquiGrupo4")
         self.mqtt_client_id = os.environ.get("MQTT_CLIENT_ID", "raspberry-pi-soil-sensor")
         self._stop = threading.Event()
