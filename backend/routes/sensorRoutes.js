@@ -1,0 +1,184 @@
+const express = require('express');
+const SensorReading = require('../models/SensorReading');
+let devSeed = null;
+// Feature flag to enable development in-memory seed data (set USE_DEV=true in .env to enable)
+const useDev = process.env.USE_DEV === 'true' || false;
+
+const router = express.Router();
+
+// Utility: sanitize a DB reading before sending al cliente
+function sanitizeReading(doc) {
+  if (!doc) return null;
+  // si es un documento de mongoose
+  const obj = typeof doc.toObject === 'function' ? doc.toObject() : doc;
+
+  // Guardar fechas sólo si son válidas para evitar toISOString() sobre Invalid Date
+  const safeDateToISOString = (d) => {
+    if (!d) return undefined;
+    const dt = new Date(d);
+    return !isNaN(dt.getTime()) ? dt.toISOString() : undefined;
+  };
+
+  const out = {
+    id: obj._id ? String(obj._id) : undefined,
+    type: obj.type,
+    value: typeof obj.value !== 'undefined' && obj.value !== null ? obj.value : undefined,
+    timestamp: safeDateToISOString(obj.timestamp),
+    deviceTimestamp: safeDateToISOString(obj.deviceTimestamp),
+  unit: obj.unit || undefined,
+    description: obj.description || undefined,
+    status: typeof obj.status === 'boolean' ? obj.status : undefined,
+    color: obj.color || undefined,
+    location: obj.location || undefined,
+    connected: typeof obj.connected === 'boolean' ? obj.connected : undefined,
+    pin: obj.pin || undefined,
+    device: obj.device || undefined
+  };
+
+  // Remove undefined values
+  Object.keys(out).forEach(k => out[k] === undefined && delete out[k]);
+  return out;
+}
+
+function sanitizeArray(arr) {
+  return Array.isArray(arr) ? arr.map(sanitizeReading) : [];
+}
+
+router.get('/', async (req, res) => {
+  try {
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    if (useDev && devSeed) {
+      const result = devSeed.getPaginated(page, limit);
+      return res.json({ data: result.data, pagination: result.pagination });
+    }
+
+    const skip = (page - 1) * limit;
+    const { type, startDate, endDate, location } = req.query;
+
+    const query = {};
+    if (type) query.type = type;
+    if (location) query.location = location;
+
+    if (startDate && endDate) {
+      query.timestamp = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate)
+      };
+    }
+
+    const total = await SensorReading.countDocuments(query);
+    const pages = Math.ceil(total / limit);
+
+    const readings = await SensorReading.find(query)
+      .sort({ timestamp: -1 })
+      .skip(skip)
+      .limit(limit);
+
+    res.json({
+      data: readings.map(sanitizeReading),
+      pagination: {
+        page,
+        limit,
+        total,
+        pages
+      }
+    });
+  } catch (error) {
+    console.error('Error obteniendo lecturas:', error);
+    res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
+router.get('/latest', async (req, res) => {
+  try {
+    if (useDev && devSeed) {
+      const reading = devSeed.latest();
+      if (!reading) return res.status(404).json({ error: 'No se encontraron lecturas' });
+      return res.json(sanitizeReading(reading));
+    }
+
+    const { type } = req.query;
+    const query = type ? { type } : {};
+    const reading = await SensorReading.findOne(query).sort({ timestamp: -1 });
+    if (!reading) {
+      return res.status(404).json({ error: 'No se encontraron lecturas' });
+    }
+    res.json(sanitizeReading(reading));
+  } catch (error) {
+    console.error('Error obteniendo última lectura:', error);
+    res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
+router.get('/stats', async (req, res) => {
+  try {
+    if (useDev && devSeed) {
+      return res.json(devSeed.stats());
+    }
+
+  const stats = {};
+  const temperature = await SensorReading.findOne({ type: 'temperature' }).sort({ timestamp: -1 });
+  stats.temperature = sanitizeReading(temperature);
+  const humidity = await SensorReading.findOne({ type: 'humidity' }).sort({ timestamp: -1 });
+  stats.humidity = sanitizeReading(humidity);
+  const lights = await SensorReading.find({ type: 'light' }).sort({ timestamp: -1 }).limit(5);
+  stats.lights = sanitizeArray(lights);
+  const door = await SensorReading.findOne({ type: 'door' }).sort({ timestamp: -1 });
+  stats.door = sanitizeReading(door);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const motionCount = await SensorReading.countDocuments({ type: 'motion', timestamp: { $gte: today } });
+    stats.motionToday = motionCount;
+  const activeAlerts = await SensorReading.find({ type: 'alarm', status: true }).sort({ timestamp: -1 });
+  stats.activeAlerts = sanitizeArray(activeAlerts);
+    res.json(stats);
+  } catch (error) {
+    console.error('Error obteniendo estadísticas:', error);
+    res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
+router.get('/chart', async (req, res) => {
+  try {
+    const { type, days = 7 } = req.query;
+
+    const startDate = new Date();
+    startDate.setDate(startDate.getDate() - parseInt(days));
+
+    const query = {
+      type,
+      timestamp: { $gte: startDate }
+    };
+
+    const readings = await SensorReading.find(query)
+      .sort({ timestamp: 1 })
+      .select('value timestamp');
+
+    const groupedData = readings.reduce((acc, reading) => {
+      const date = new Date(reading.timestamp);
+      const key = type === 'temperature' || type === 'humidity'
+        ? date.toISOString().slice(0, 13) // Por hora
+        : date.toISOString().slice(0, 10); // Por día
+
+      if (!acc[key]) {
+        acc[key] = { date: key, values: [] };
+      }
+      acc[key].values.push(reading.value);
+      return acc;
+    }, {});
+
+    const chartData = Object.values(groupedData).map(item => ({
+      date: item.date,
+      value: item.values.reduce((sum, val) => sum + val, 0) / item.values.length,
+      count: item.values.length
+    }));
+
+    res.json(chartData);
+  } catch (error) {
+    console.error('Error obteniendo datos de gráfica:', error);
+    res.status(500).json({ error: 'Error del servidor' });
+  }
+});
+
+module.exports = router;
