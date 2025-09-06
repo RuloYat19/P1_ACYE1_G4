@@ -13,8 +13,8 @@ router.post('/light', async (req, res) => {
       return res.status(400).json({ error: 'Se requiere habitación y estado' });
     }
 
-    // Publicar mensaje MQTT con habitación específica
-    await mqttService.publishMessage('/ilumination', { 
+  // Publicar mensaje MQTT con habitación específica (corregido '/illumination')
+  await mqttService.publishMessage('/illumination', { 
       room: room.toLowerCase(), 
       state, 
       color 
@@ -53,17 +53,27 @@ router.post('/servo', async (req, res) => {
     if (!action || action !== 'open') {
       return res.status(400).json({ error: 'Se requiere action: "open"' });
     }
-  const topic = '/door';
-  const message = { action: 'open' };
-  await mqttService.publishMessage(topic, message);
-    return res.status(200).json({ success: true, topic, message });
+    const topic = '/door';
+    const message = { action: 'open' };
+    await mqttService.publishMessage(topic, message);
+
+    // Registrar acción
+    const reading = new SensorReading({
+      type: 'door',
+      value: 'open',
+      description: 'Puerta abierta (servo)',
+      status: true,
+      location: 'entrance',
+      device: 'servo'
+    });
+    await reading.save();
+    res.status(200).json({ success: true, topic, message, data: reading });
   } catch (error) {
     console.error('Error controlando servo:', error);
     return res.status(500).json({ error: 'Error interno' });
   }
 });
 
-module.exports = router;
 
 // Control led RGB
 router.post('/light/rgb', async (req, res) => {
@@ -92,7 +102,7 @@ router.post('/light/rgb', async (req, res) => {
     }
     
     // Publicar comando a MQTT
-    mqttService.publishMessage(`/ilumination/control`, command);
+  mqttService.publishMessage(`/illumination/control`, command);
     
     // Guardar en base de datos
     const reading = new SensorReading({
@@ -151,7 +161,7 @@ router.post('/door', async (req, res) => {
     const reading = new SensorReading({
       type: 'door',
       value: action,
-      description: 'Puerta principal',
+      description: action === 'open' ? 'Puerta principal abierta' : 'Puerta principal cerrada',
       status: action === 'open',
       location: 'entrance'
     });
@@ -184,7 +194,7 @@ router.post('/pump', async (req, res) => {
     const reading = new SensorReading({
       type: 'pump',
       value: state ? 'on' : 'off',
-      description: `Bomba de riego - Humedad: ${humidity || 'N/A'}`,
+      description: state ? `Bomba activada (Humedad: ${humidity || 'N/A'})` : 'Bomba desactivada',
       status: state,
       location: 'garden'
     });
@@ -268,3 +278,36 @@ router.get('/status', async (req, res) => {
 });
 
 module.exports = router;
+
+// Historial de acciones de actuadores con paginación
+router.get('/actions', async (req, res) => {
+  try {
+    const page = Math.max(parseInt(req.query.page) || 1, 1);
+    const limit = Math.min(parseInt(req.query.limit) || 20, 100);
+    const skip = (page - 1) * limit;
+    const actionTypes = ['fan','light','door','pump','alarm','motion'];
+    const filters = { type: { $in: actionTypes } };
+    const [total, docs] = await Promise.all([
+      SensorReading.countDocuments(filters),
+      SensorReading.find(filters).sort({ timestamp: -1 }).skip(skip).limit(limit)
+    ]);
+    res.json({
+      page,
+      limit,
+      total,
+      pages: Math.ceil(total / limit),
+      data: docs.map(r => ({
+        id: r._id,
+        type: r.type,
+        value: r.value,
+        status: r.status,
+        description: r.description,
+        location: r.location,
+        timestamp: r.timestamp
+      }))
+    });
+  } catch (e) {
+    console.error('Error obteniendo acciones:', e);
+    res.status(500).json({ error: 'Error obteniendo acciones' });
+  }
+});

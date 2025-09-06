@@ -83,6 +83,13 @@ const Dashboard: React.FC = () => {
   const [actuators, setActuators] = useState<any>(null);
   const [rgbLoading, setRgbLoading] = useState(false);
   const [currentRGBColor, setCurrentRGBColor] = useState("#000000");
+  // Acciones de actuadores
+  const [actions, setActions] = useState<any[]>([]);
+  const [actionsPage, setActionsPage] = useState(1);
+  const [actionsPages, setActionsPages] = useState(1);
+  const [actionsTotal, setActionsTotal] = useState(0);
+  const [actionsLimit] = useState(10);
+  const [actionsLoading, setActionsLoading] = useState(false);
   //servo
 
   // ...ex
@@ -140,14 +147,44 @@ const Dashboard: React.FC = () => {
       setSocketError(e?.message ?? "error")
     );
     socket.on("newReading", (data: any) => {
-      // fetch combined latest temperature+humidity
       refreshLatest();
       if ((pagination?.page ?? 1) === 1) fetchPage(1);
+    });
+    // Escuchar actualizaciones de sensores para refrescar acciones cuando el tipo sea de actuador
+    socket.on("sensor_update", (payload: any) => {
+      if (!payload?.type) return;
+      if (["temperature", "humidity", "soil"].includes(payload.type)) {
+        // lecturas ambientales existentes
+        return;
+      }
+      // recargar acciones para reflejar nueva actividad
+      loadActions(actionsPage);
     });
     return () => {
       socket.disconnect();
     };
   }, [fetchPage, pagination?.page, setLatestReading]);
+
+  const loadActions = async (page = 1) => {
+    try {
+      setActionsLoading(true);
+      const res = await axios.get(`${API_URL}/api/actuators/actions`, {
+        params: { page, limit: actionsLimit },
+      });
+      setActions(res.data?.data || []);
+      setActionsPage(res.data?.page || 1);
+      setActionsPages(res.data?.pages || 1);
+      setActionsTotal(res.data?.total || 0);
+    } catch (e) {
+      console.error("Error cargando acciones", e);
+    } finally {
+      setActionsLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadActions(1);
+  }, []);
 
   useEffect(() => {
     const loadChart = async () => {
@@ -573,6 +610,87 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Historial y paginación */}
+        {/* Acciones de Actuadores */}
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+          <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4 p-5 border-b border-slate-200">
+            <h2 className="text-lg font-semibold text-slate-800">Acciones de Actuadores</h2>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => loadActions(actionsPage)}
+                className="inline-flex items-center gap-2 text-sm font-medium px-4 py-2 rounded-lg bg-slate-800 text-white hover:bg-slate-700 active:scale-[.98] transition disabled:opacity-50"
+              >
+                <RefreshCw className="size-4" /> Actualizar
+              </button>
+            </div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead className="bg-slate-100 text-slate-600 text-xs uppercase">
+                <tr>
+                  <th className="text-left font-semibold px-5 py-3">Fecha y Hora</th>
+                  <th className="text-left font-semibold px-5 py-3">Tipo</th>
+                  <th className="text-left font-semibold px-5 py-3">Valor</th>
+                  <th className="text-left font-semibold px-5 py-3">Descripción</th>
+                  <th className="text-left font-semibold px-5 py-3">Ubicación</th>
+                </tr>
+              </thead>
+              <tbody>
+                {actionsLoading ? (
+                  Array.from({ length: 6 }).map((_, i) => (
+                    <tr key={i} className="border-t border-slate-100 animate-pulse">
+                      <td className="px-5 py-3"><div className="h-3 w-40 bg-slate-200 rounded" /></td>
+                      <td className="px-5 py-3"><div className="h-3 w-20 bg-slate-200 rounded" /></td>
+                      <td className="px-5 py-3"><div className="h-3 w-16 bg-slate-200 rounded" /></td>
+                      <td className="px-5 py-3"><div className="h-3 w-48 bg-slate-200 rounded" /></td>
+                      <td className="px-5 py-3"><div className="h-3 w-24 bg-slate-200 rounded" /></td>
+                    </tr>
+                  ))
+                ) : actions.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="px-5 py-10 text-center text-slate-500 text-sm">No hay acciones registradas.</td>
+                  </tr>
+                ) : (
+                  actions.map((a: any) => (
+                    <tr key={a.id} className="border-t border-slate-100 hover:bg-slate-50">
+                      <td className="px-5 py-3 whitespace-nowrap text-slate-700">{a.timestamp ? formatDate(a.timestamp) : '—'}</td>
+                      <td className="px-5 py-3 capitalize">{a.type}</td>
+                      <td className="px-5 py-3">{String(a.value ?? '—')}</td>
+                      <td className="px-5 py-3">{a.description || '—'}</td>
+                      <td className="px-5 py-3">{a.location || '—'}</td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+          {actionsPages > 1 && (
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 px-5 py-4 border-t border-slate-200 text-sm">
+              <div className="text-slate-600">
+                Mostrando <strong>{(actionsPage - 1) * actionsLimit + (actions.length ? 1 : 0)}</strong> a <strong>{(actionsPage - 1) * actionsLimit + actions.length}</strong> de <strong>{actionsTotal}</strong> acciones
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { if (actionsPage > 1) { const p = actionsPage - 1; setActionsPage(p); loadActions(p); } }}
+                  disabled={actionsPage <= 1}
+                  className="px-3 h-9 rounded-md border text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >Anterior</button>
+                {Array.from({ length: actionsPages }, (_, i) => i + 1).slice(0, 5).map(p => (
+                  <button
+                    key={p}
+                    onClick={() => { setActionsPage(p); loadActions(p); }}
+                    className={`px-3 h-9 rounded-md border text-slate-700 bg-white hover:bg-slate-50 ${p === actionsPage ? 'bg-slate-800 text-white border-slate-800 hover:bg-slate-700' : ''}`}
+                  >{p}</button>
+                ))}
+                <button
+                  onClick={() => { if (actionsPage < actionsPages) { const p = actionsPage + 1; setActionsPage(p); loadActions(p); } }}
+                  disabled={actionsPage >= actionsPages}
+                  className="px-3 h-9 rounded-md border text-slate-700 bg-white hover:bg-slate-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                >Siguiente</button>
+              </div>
+            </div>
+          )}
+        </div>
+
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
           <div className="flex flex-col gap-4 p-5 border-b border-slate-200 md:flex-row md:items-center md:justify-between">
             <h2 className="text-lg font-semibold text-slate-800">

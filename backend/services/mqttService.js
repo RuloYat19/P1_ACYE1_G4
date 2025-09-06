@@ -40,6 +40,7 @@ class MQTTService {
   // Estado simple para evitar spam de mensajes de encendido
   this.fanAlreadyOn = false; // asumimos apagado inicialmente
   this.lastFanOnTs = 0;
+  this.lastFanChangeTs = 0; // control anti-spam para cualquier cambio
   }
 
   connect() {
@@ -220,7 +221,7 @@ class MQTTService {
 
   async processTemperature(data) {
     const deviceTs = data.timestamp ? new Date(data.timestamp) : null;
-    const timestamp = new Date(); // server timestamp
+    const timestamp = new Date(); 
     const reading = new SensorReading({
       type: "temperature",
       value: isNaN(Number(data.temperature)) ? null : Number(data.temperature),
@@ -253,7 +254,52 @@ class MQTTService {
           await this.publishMessage("/fan", { state: "on", source: "backend", reason: `temp>=${threshold}` });
           this.fanAlreadyOn = true;
           this.lastFanOnTs = now;
+          this.lastFanChangeTs = now;
           console.log(`Ventilador activado por temperatura (${reading.value}°C >= ${threshold}°C)`);
+
+          try {
+            const fanAction = new SensorReading({
+              type: 'fan',
+              value: 'on',
+              status: true,
+              description: 'Ventilador encendido por temperatura',
+              location: reading.location || 'interior',
+              device: 'fan_auto_temp'
+            });
+            await fanAction.save();
+            if (global && typeof global.emitUpdate === 'function') {
+              global.emitUpdate('sensor_update', sanitizeReading(fanAction));
+            }
+          } catch (err) {
+            console.error('Error guardando acción de ventilador:', err);
+          }
+        }
+      } else {
+        const offThreshold = threshold - 1; // 19°C para pruebas
+        if (this.fanAlreadyOn && reading.value <= offThreshold) {
+          const now = Date.now();
+          if (now - this.lastFanChangeTs > 5000) { // anti-spam 5s
+            try {
+              await this.publishMessage("/fan", { state: "off", source: "backend", reason: `temp<=${offThreshold}` });
+              this.fanAlreadyOn = false;
+              this.lastFanChangeTs = now;
+              console.log(`Ventilador apagado por temperatura (${reading.value}°C <= ${offThreshold}°C)`);
+              const fanOffAction = new SensorReading({
+                type: 'fan',
+                value: 'off',
+                status: false,
+                description: 'Ventilador apagado por temperatura',
+                location: reading.location || 'interior',
+                device: 'fan_auto_temp'
+              });
+              await fanOffAction.save();
+              if (global && typeof global.emitUpdate === 'function') {
+                global.emitUpdate('sensor_update', sanitizeReading(fanOffAction));
+              }
+            } catch (err) {
+              console.error('Error guardando acción de apagado de ventilador:', err);
+            }
+          }
         }
       }
     } catch (e) {
