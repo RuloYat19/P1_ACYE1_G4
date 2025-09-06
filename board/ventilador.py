@@ -18,12 +18,6 @@ class FanService:
         self.mqtt_user = os.environ.get("MQTT_USERNAME", "isaac")
         self.mqtt_pass = os.environ.get("MQTT_PASSWORD", "ArquiGrupo4")
         self.mqtt_client_id = os.environ.get("MQTT_CLIENT_ID", "raspberry-pi-fan")
-        self.temp_topic = os.environ.get("TEMP_TOPIC", "/temperatura")
-        try:
-            self.temp_threshold = float(os.environ.get("TEMP_THRESHOLD", "20.0"))
-        except Exception:
-            self.temp_threshold = 20.0
-        self.auto_off = str(os.environ.get("TEMP_AUTO_OFF", "1")).lower() in ("1", "true", "yes")
         self.fan_state = False
         self.client = None
         self._stop = threading.Event()
@@ -58,7 +52,7 @@ class FanService:
             pass
 
     def _on_connect(self, client, userdata, flags, rc):
-        topics = ["/fan", "/ventilador", "/actuators/fan", self.temp_topic]
+        topics = ["/fan", "/ventilador", "/actuators/fan"]
         for topic in topics:
             try:
                 client.subscribe(topic)
@@ -70,41 +64,11 @@ class FanService:
             payload_str = msg.payload.decode()
         except Exception:
             return
-        if msg.topic == self.temp_topic:
-            try:
-                data = json.loads(payload_str)
-            except Exception:
-                try:
-                    data = float(payload_str.strip())
-                except Exception:
-                    return
-            self._handle_temperature(data)
-            return
         try:
             data = json.loads(payload_str)
         except Exception:
             data = {"state": payload_str.strip()}
         self._handle_fan_command(data)
-
-    def _handle_temperature(self, data):
-        try:
-            t = None
-            if isinstance(data, dict):
-                if "temperature" in data:
-                    t = float(data.get("temperature"))
-                elif "temp" in data:
-                    t = float(data.get("temp"))
-            else:
-                t = float(data)
-        except Exception:
-            return
-        if t is None:
-            return
-        if t >= self.temp_threshold:
-            self.turn_on()
-        else:
-            if self.auto_off:
-                self.turn_off()
 
     def _handle_fan_command(self, data):
         try:
